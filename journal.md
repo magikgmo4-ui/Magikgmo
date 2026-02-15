@@ -253,3 +253,83 @@ rm -f reports/equity.png reports/trades.csv
 - Refaire un sweep en mode directionnel (long/short) pour comparer.
 - Ajouter une stratégie robuste #1 (ex: trend long/short avec ATR stop et/ou vol targeting) une fois le moteur L/S validé.
 - Optionnel: améliorer significativité (min_trades) selon la fenêtre et paramètres.
+
+## 2026-02-15 14:45 — pdf integral
+1) Objectifs:
+- Centraliser en format “imprimable/PDF” des checklists, journaux et guides opérationnels pour :
+  - Trading XAUUSD (V2/V2.1) : checklist pré-trade, plan du jour, journal, stats, règles décisionnelles.
+  - Analyse macro BTC bear market + checklists/stratégies de shorts.
+  - Pack prop FTMO 50K (EURUSD Pullback EMA) : règles, checklist, sizing, anti-tilt, phase 2.
+  - Procédure Debian 12 USB autonome + cgminer (ASIC USB).
+  - Archive : node BlockDAG testnet Awakening (Docker) + VoIP via USB tethering + setup VoIP Linux.
+
+2) Actions:
+- Définition d’une checklist XAUUSD pré-trade (HTF, DXY, H1, M15, M5, RR ≥ 1:2, news, état mental).
+- Mise en place de gabarits XAUUSD :
+  - Checklist pré-trade V2 imprimable.
+  - “Plan du jour” (biais, filtre DXY, news, niveaux, 3 scénarios).
+  - “Journal” par trade (réel/backtest) avec plan/exécution/review et lien TradingView/capture.
+- Rédaction d’un tutoriel d’utilisation “XAUUSD V2 Stats” (import Google Sheets, settings, journaux, dashboard, discipline).
+- Rédaction d’un “Guide Décisionnel XAUUSD V2.1” basé sur stats (seuils NO TRADE, setups autorisés, sessions).
+- Ajout d’un cadrage “Projet XAUUSD – Analyse et Stratégie de Trading” (processus quotidien, MTF, filtre DXY, risque, journalisation, backtests).
+- Rédaction d’une synthèse “Bitcoin Bear Market Analysis” (hypothèses, timing M1–M10+, zones TP rally, shorts optimaux, base algo).
+- Définition d’un modèle “Algorithme structurel — Long USDT / Short coin”.
+- Création d’un “PROP EXAM PACK” FTMO 50K (EURUSD) : stratégie Pullback EMA, règles, checklist, sizing, anti-tilt, gestion phase 2.
+- Création d’une checklist BTC short (bear) + fiche “short agressif (rejet confirmé)” avec zones clés.
+- Documentation Debian 12 (Bookworm) : création clé USB (EtchDroid), install minimale, build cgminer (GekkoScience), test, autostart.
+- Archive : procédure BlockDAG node (Docker + .env) ; guides VoIP USB tethering et setup VoIP Linux.
+
+3) Décisions:
+- XAUUSD : checklist pré-trade obligatoire ; si un point critique manque → PAS DE TRADE.
+- XAUUSD (V2.1) : règles “NO TRADE” si drawdown > -5%, winrate 20 derniers trades < 45%, checklist non respectée ; losing streak ≥ 3 → risque -50%.
+- FTMO : EURUSD uniquement ; max 2 trades/jour ; stop de journée à +1R ou -1R ; risque fixe 0.5% (250$) ; pas de trading pendant news rouges (couper 10–15 min avant/après).
+- BTC bear : lecture contrarienne (news bullish + indicateurs rouges) ; privilégier short majeur M4 (févr–avr 2026) ; ne plus shorter en M6+ (préparer accumulation).
+- Debian/cgminer : Debian 12 netinst amd64, installation minimale sans GUI ; autostart via script + systemd/rc.local.
+
+4) Commandes / Code:
+```bash
+# Debian post-install
+apt update && apt upgrade -y
+apt install -y git build-essential libusb-1.0-0-dev pkg-config
+
+# cgminer (GekkoScience)
+git clone https://github.com/ckolivas/cgminer.git
+cd cgminer
+./autogen.sh
+CFLAGS='-O2' ./configure --enable-gekko
+make
+make install
+
+# test détection ASIC USB
+cgminer -n
+```
+
+```bash
+# Docker (Debian) + BlockDAG (archive)
+apt update && apt upgrade -y
+apt install -y ca-certificates curl gnupg lsb-release apt-transport-https software-properties-common
+mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list
+apt update
+apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+systemctl enable docker
+systemctl start docker
+
+cd /opt
+git clone https://github.com/BlockdagNetworkLabs/blockdag-scripts.git
+cd blockdag-scripts
+# .env
+# PUB_ETH_ADDR=0xVOTRE_ADRESSE_EVM
+# CHAIN=awakening
+docker compose up -d
+docker ps
+docker logs -f
+```
+
+5) Points ouverts (next):
+- Compléter les onglets Google Sheets (Settings : solde, risque %, valeur lot XAUUSD) et commencer à journaliser (Trades_Reels / Backtests).
+- Renseigner les valeurs manquantes du tableau “Compte / Solde initial / Risque % / Valeur XAUUSD”.
+- Pour l’algo “BEAR■EATER” : définir et fournir les données exactes (funding, Fear & Greed précis, structure HTF).
+- Mettre en place concrètement l’autostart cgminer (création `start-cgminer.sh` + service systemd) avec paramètres pool.
+- BlockDAG/VoIP : éléments marqués “ARCHIVE — à utiliser plus tard” (pas d’exécution réalisée dans le dump).
