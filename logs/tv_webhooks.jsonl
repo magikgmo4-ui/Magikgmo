@@ -1,0 +1,4 @@
+{"ts": "2026-02-15T17:00:00.940604-05:00", "payload": {"engine": "TV_TEST", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "60", "price": 68826.7, "tp": 0, "sl": 0}}
+{"ts": "2026-02-15T17:04:32.807846-05:00", "payload": {"key": "GHOST_XAU_2026_ULTRA", "engine": "TV_TEST", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "60", "price": 1, "tp": 2, "sl": 0}}
+{"ts": "2026-02-15T17:13:19.963196-05:00", "payload": {"key": "GHOST_XAU_2026_ULTRA", "engine": "COINM_SHORT", "signal": "SELL", "symbol": "BTCUSDT.P", "tf": "60", "price": 68000, "tp": 67000, "sl": 69000}}
+{"ts": "2026-02-15T17:13:42.243082-05:00", "payload": {"key": "GHOST_XAU_2026_ULTRA", "engine": "USDTM_LONG", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "60", "price": 68000, "tp": 70000, "sl": 67000}}

@@ -333,3 +333,169 @@ docker logs -f
 - Pour l’algo “BEAR■EATER” : définir et fournir les données exactes (funding, Fear & Greed précis, structure HTF).
 - Mettre en place concrètement l’autostart cgminer (création `start-cgminer.sh` + service systemd) avec paramètres pool.
 - BlockDAG/VoIP : éléments marqués “ARCHIVE — à utiliser plus tard” (pas d’exécution réalisée dans le dump).
+
+## 2026-02-15 15:19 | TV Webhook | TEST | BTCUSDT.P 1H | BUY
+1. **Signal**: `BUY`
+2. **Engine**: `TEST`
+3. **Symbol/TF**: `BTCUSDT.P` / `1H`
+4. **Price**: `1`
+5. **TP**: `2`
+6. **SL**: `0`
+7. **Payload brut**:
+```json
+{"engine": "TEST", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "1H", "price": 1, "tp": 2, "sl": 0}
+```
+
+## 2026-02-15 15:31 | TV Webhook | NGROK_TEST | BTCUSDT.P 1H | SELL
+1. **Signal**: `SELL`
+2. **Engine**: `NGROK_TEST`
+3. **Symbol/TF**: `BTCUSDT.P` / `1H`
+4. **Price**: `999`
+5. **TP**: `888`
+6. **SL**: `777`
+7. **Payload brut**:
+```json
+{"engine": "NGROK_TEST", "signal": "SELL", "symbol": "BTCUSDT.P", "tf": "1H", "price": 999, "tp": 888, "sl": 777}
+```
+
+## 2026-02-15 16:00 | TV Webhook | TV_TEST | BTCUSDT.P 60 | BUY
+1. **Signal**: `BUY`
+2. **Engine**: `TV_TEST`
+3. **Symbol/TF**: `BTCUSDT.P` / `60`
+4. **Price**: `68420`
+5. **TP**: `0`
+6. **SL**: `0`
+7. **Payload brut**:
+```json
+{"engine": "TV_TEST", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "60", "price": 68420, "tp": 0, "sl": 0}
+```
+
+## 2026-02-15 17:04 | TV Webhook | TV_TEST | BTCUSDT.P 60 | BUY
+
+1. **Signal**: `BUY`
+2. **Engine**: `TV_TEST`
+3. **Symbol/TF**: `BTCUSDT.P` / `60`
+4. **Price**: `1.0`
+5. **TP**: `2.0`
+6. **SL**: `0.0`
+7. **Payload brut**:
+```json
+{
+  "key": "GHOST_XAU_2026_ULTRA",
+  "engine": "TV_TEST",
+  "signal": "BUY",
+  "symbol": "BTCUSDT.P",
+  "tf": "60",
+  "price": 1.0,
+  "tp": 2.0,
+  "sl": 0.0
+}
+```
+
+## 2026-02-15 17:13 | TV Webhook | COINM_SHORT | BTCUSDT.P 60 | SELL
+
+1. **Signal**: `SELL`
+2. **Engine**: `COINM_SHORT`
+3. **Symbol/TF**: `BTCUSDT.P` / `60`
+4. **Price**: `68000.0`
+5. **TP**: `67000.0`
+6. **SL**: `69000.0`
+7. **Payload brut**:
+```json
+{
+  "key": "GHOST_XAU_2026_ULTRA",
+  "engine": "COINM_SHORT",
+  "signal": "SELL",
+  "symbol": "BTCUSDT.P",
+  "tf": "60",
+  "price": 68000.0,
+  "tp": 67000.0,
+  "sl": 69000.0
+}
+```
+
+## 2026-02-15 17:26 — multi-moteur auto-algo
+1) Objectifs:
+- Formaliser un système multi-moteur: short crypto en COIN-M (accumulation), long crypto en USDT-M (bull confirmé), achat CFD Gold.
+- Transformer les signaux TradingView “Smart Money” en alertes webhook vers un serveur Debian, avec journalisation automatique.
+- Mettre en place un router côté serveur (secret + lock moteur) et valider le pipeline end-to-end via ngrok.
+
+2) Actions:
+- Analyse multi-actifs (BTC/ETH/SOL/XAU) et définition des zones/conditions:
+  - BTC short pullback 68600–68900, invalidation > 69200, TP 67200/66200/65000.
+  - ETH short pullback 1955–1970, invalidation > 2020, TP 1920/1900/1850.
+  - Gold buy pullback 5033–5035, invalidation < 5025 (M15 close), TP 5055/5065/5075.
+- Codage d’un pseudo-algo Python (offline) + correction d’exécution: Python collé dans bash → nécessité d’exécuter via `python3`/fichier `.py`.
+- Contrainte TradingView: indicateur Smart Money original en lecture seule → recoder un clone Pine “bulletproof” (éviter ternary multi-lignes) jusqu’à compilation OK.
+- Mise en place d’alertes TradingView:
+  - Compréhension que `alert()` nécessite une alerte TradingView “Any alert() function call” (et non 2 alertes `alertcondition()` BUY/SELL).
+  - Ajout d’un test manuel (TV_TEST) pour valider l’envoi.
+- Mise en place serveur Debian:
+  - Création venv + installation `fastapi`, `uvicorn`.
+  - Création `webhook_server.py` (FastAPI) écrivant dans `/opt/trading/journal.md`.
+  - Tests locaux `curl` → OK.
+- Exposition Internet:
+  - Installation/usage ngrok sur Debian.
+  - Validation ngrok → Debian via `curl` sur URL publique → OK.
+  - Debug TradingView via ngrok dashboard `127.0.0.1:4040` → preuve que TradingView n’envoyait pas tant que l’alerte “Any alert() function call” n’était pas correctement utilisée.
+  - Réception confirmée d’un payload `TV_TEST` dans `journal.md`.
+- Sécurisation/Router (étape 2.2):
+  - Ajout secret côté serveur (clé attendue dans le JSON).
+  - Mise en place d’un router: normalisation payload, raw logs JSONL, state/lock moteur (agressifs: COINM_SHORT, USDTM_LONG).
+  - Résolution conflit port 8000 “address already in use” + validation `/docs` + `lsof -i :8000`.
+  - Validation router via `curl` avec `key` → OK; state reste null tant que moteur non agressif (TV_TEST).
+
+3) Décisions:
+- Pipeline retenu: TradingView (Pine clone) = moteur de signaux → webhook JSON → ngrok → FastAPI Debian → append journal.
+- Une seule alerte TradingView par chart: “Any alert() function call” avec message `{{alert_message}}`.
+- Choix de l’étape suivante: scripts Pine séparés par moteur (option B) plutôt qu’un seul multi-engine.
+- Activation d’un “engine lock” côté serveur pour éviter 2 moteurs agressifs simultanés.
+
+4) Commandes / Code:
+```bash
+# Python venv + deps
+cd /opt/trading
+python3 -m venv venv
+source venv/bin/activate
+pip install fastapi uvicorn python-dotenv
+
+# Lancer serveur
+python -m uvicorn webhook_server:app --host 0.0.0.0 --port 8000
+
+# Vérifier API
+curl http://127.0.0.1:8000/docs
+lsof -i :8000
+
+# Test local webhook
+curl -X POST http://127.0.0.1:8000/tv \
+  -H "Content-Type: application/json" \
+  -d '{"key":"GHOST_XAU_2026_ULTRA","engine":"TV_TEST","signal":"BUY","symbol":"BTCUSDT.P","tf":"60","price":1,"tp":2,"sl":0}'
+
+tail -n 25 /opt/trading/journal.md
+
+# Test via ngrok URL publique
+curl -X POST https://phytogeographical-subnodulous-joycelyn.ngrok-free.dev/tv \
+  -H "Content-Type: application/json" \
+  -d '{"engine":"NGROK_TEST","signal":"SELL","symbol":"BTCUSDT.P","tf":"1H","price":999,"tp":888,"sl":777}'
+
+# Inspect requêtes ngrok
+curl -s http://127.0.0.1:4040/api/requests/http | head
+
+# Reset lock moteur (state)
+echo '{"active_engine": null, "updated_at": null}' > /opt/trading/state/router_state.json
+cat /opt/trading/state/router_state.json
+```
+
+```pine
+// Pine: JSON construit en une seule ligne dans les blocs BUY/SELL (évite erreurs multi-lignes)
+// Exemple (dans buy/sell condition):
+json_msg = "{\"engine\":\"TV_TEST\",\"signal\":\"BUY\",\"symbol\":\"" + syminfo.ticker + "\",\"tf\":\"" + timeframe.period + "\",\"price\":" + str.tostring(close) + ",\"tp\":0,\"sl\":0}"
+alert(json_msg, alert.freq_once_per_bar)
+```
+
+5) Points ouverts (next):
+- Finaliser Étape 2 (router): valider state+lock sur moteurs agressifs (COINM_SHORT puis tentative USDTM_LONG → attendu 409) et définir procédure “reset lock” standard.
+- Étape 1 (Pine prod): livrer 3 scripts Pine séparés (COINM_SHORT / USDTM_LONG / GOLD_CFD_LONG) intégrant `key` et payload complet, retirer debug/test.
+- Côté TradingView: s’assurer que l’unique alerte “Any alert() function call” est active sur chaque chart/script et que l’URL webhook inclut `/tv`.
+- (Optionnel) Durcir la sécurité (au-delà du `key`): limitation IP, rotation secret, ou signature.
+- Stabiliser l’exécution (systemd pour uvicorn + démarrage ngrok/tunnel) si objectif “always-on”.
