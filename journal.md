@@ -2137,3 +2137,159 @@ sudo systemctl restart tv-perf.service
 5. **GO NEXT (prochaine session)**:
    - Tester TradingView alert -> ngrok -> /tv -> perf OPEN
    - Enregistrer signals + ouvrir simulations trades (OPEN/CLOSE) via perf UI
+
+## 2026-02-16 18:50 — algo28
+1) Objectifs:
+- Valider/corriger le dépôt après push (requirements, endpoints, scripts).
+- Stabiliser `journal_add.sh` (commit+push auto).
+- Finaliser l’UI PERF (CSS/visuel) sans casser le service.
+- Valider end-to-end local (services + smoke/diagnose) puis accès externe via ngrok et tests webhook→perf.
+- Vérifier accessibilité LAN/Windows.
+
+2) Actions:
+- Analyse repo ZIP: compilation de tous les `.py` OK; corrections proposées: `requirements.txt` (fastapi/uvicorn) et HEAD `/perf/ui` (405).
+- Gestion des écrasements lors d’un unzip/copie (cas `yesè`); vérif `journal_add.sh` via `head`.
+- Remplacement `journal_add.sh` par une version robuste: `set -euo pipefail`, garde “Usage”, `git commit ... || echo "Nothing to commit."`, `git push`.
+- Résolution du rejet git non-fast-forward:
+  - Tentative `pull --rebase` bloquée par modifications non commitées.
+  - Push forcé effectué: `git push --force-with-lease origin main`.
+  - Nettoyage: ajout `.gitignore` (tmp/logs/venv/cache), ajout `scripts/clean_repo.sh`, commit final + push normal.
+  - Suppression d’un fichier parasite non suivi: `"cript + perf UI + scripts + ignore tmp\""`.
+  - Config git: `pull.rebase=true`, `rebase.autoStash=true`.
+- Tests E2E `journal_add.sh`: test sans titre (Usage), test avec titre (création/commit/push), vérifs `tail` + `git log`.
+- UI PERF:
+  - Problème récurrent: copier/coller corrompant le CSS (injection de bouts de commandes).
+  - Déduplication des blocs CSS “prevent overlap” (suppression de 3 duplicats, 1 conservé), redémarrage service, tests GET `/perf/ui`.
+  - Ajouts UI: patch “clarity” (lisibilité) + patch “polish” (zebra rows, alignement numérique, chips OPEN/CLOSED) via scripts.
+- Tests “système entier” local via `scripts/autos.sh` (smoke + diagnose) + endpoints `/api/state`, `/perf/summary`, `/perf/open`, `/perf/ui` OK; logs sauvegardés.
+- `.gitignore` mis à jour pour ignorer `logs/` et `*.log`.
+- Backup snapshot avant ngrok/firewall/TV dans `/opt/trading/backups/pre_ngrok_fw_tv_<TS>`.
+- ngrok:
+  - Diagnostic via API locale 4040 (`/api/status`, `/api/tunnels`); correction de l’extraction `public_url` (éviter pipes -> fichier `/tmp/...json`).
+  - Patch `ngrok-tv.service` pour forcer config + éviter double-run (pkill via shell); correction après échec systemd (ExecStartPre).
+  - Validation public: `PUBLIC_URL` OK et GET `/api/state` via ngrok OK.
+- Webhook externe (ngrok):
+  - Découverte routes: POST `/tv` (pas `/api/webhook`).
+  - Auth: payload JSON `key` doit matcher `TV_WEBHOOK_KEY` (chargée via `/opt/trading/.env`).
+  - Validation métier: `signal` doit être BUY/SELL; risk sizing obligatoire via `risk_quote(engine, price, sl, tp)`.
+  - Tests risk_quote: engine `TEST` → qty/risk=0 (fallback); engine `XAU_M5_SCALP` → qty/risk > 0.
+  - POST ngrok `/tv` avec `engine=XAU_M5_SCALP` → 200, événement visible via `/api/events`.
+- Chaîne webhook→perf:
+  - Vérification perf: trade OPEN créé dans `/perf/open` et listé dans `/perf/trades`.
+  - CLOSE via `/perf/event` puis vérif status CLOSED via export JSON `/tmp/perf_trades_<TS>.json` + parsing Python.
+- LAN:
+  - Diag IP/ports: IP 192.168.16.155, listeners 0.0.0.0:8000/8010, reachability LAN OK.
+  - Firewall: policy INPUT DROP mais règles accept 22/8000/8010 présentes (stack ufw/iptables).
+
+3) Décisions:
+- Endpoint webhook officiel retenu: `POST /tv`.
+- Auth webhook: champ JSON `key` (pas header) doit matcher `TV_WEBHOOK_KEY`.
+- Risk sizing: ne pas utiliser `engine=TEST` pour tests end-to-end; utiliser un engine avec quote non nulle (ex: `XAU_M5_SCALP`).
+- Méthode d’édition UI: privilégier micro-patches/scrips et déduplication; éviter remplacement massif de CSS par copier/coller.
+- Stabilisation ngrok: forcer `--config` + `ExecStartPre` (pkill) pour éviter ERR_NGROK_334 (double-run).
+
+4) Commandes / Code:
+```bash
+# journal_add.sh (patch robuste)
+cat > /opt/trading/tmp/Magikgmo-main/journal_add.sh <<'SH'
+#!/bin/bash
+set -euo pipefail
+export TZ=America/Montreal
+TODAY=$(date +%F)
+FILE="/opt/trading/journal/$TODAY.md"
+TITLE="${1:-}"
+if [ -z "$TITLE" ]; then
+  echo "Usage: $0 \"Titre de session\""
+  exit 1
+fi
+mkdir -p /opt/trading/journal
+[ -f "$FILE" ] || touch "$FILE"
+echo "" >> "$FILE"
+echo "## $(date '+%Y-%m-%d %H:%M:%S') — $TITLE" >> "$FILE"
+echo "" >> "$FILE"
+cd /opt/trading
+git add journal
+git commit -m "Journal update: $TITLE" || echo "Nothing to commit."
+git push
+SH
+chmod +x /opt/trading/tmp/Magikgmo-main/journal_add.sh
+cp -f /opt/trading/tmp/Magikgmo-main/journal_add.sh /opt/trading/journal_add.sh
+chmod +x /opt/trading/journal_add.sh
+
+# résolution divergence git (réalisé via force)
+git push --force-with-lease origin main
+
+# commit final patch + ignore tmp/logs
+git add .gitignore journal_add.sh perf/perf_app.py scripts/diagnose.sh scripts/smoke.sh scripts/clean_repo.sh
+git commit -m "Fix: journal script + perf UI + scripts + ignore tmp"
+git push origin main
+
+# suppression fichier parasite non suivi
+rm -f "cript + perf UI + scripts + ignore tmp\""
+
+# config git
+git config pull.rebase true
+git config rebase.autoStash true
+
+# dédup CSS overlap
+python - <<'PY'
+# (script: suppression duplicats overlap dans <style> puis restart)
+PY
+sudo systemctl restart tv-perf.service
+
+# patch scripts UI (clarté/polish) + commit
+git add perf/perf_app.py scripts/patch_perf_ui_css_clean17.sh scripts/patch_perf_ui_minimal_clarity.sh scripts/patch_perf_ui_polish_min.sh
+git commit -m "Perf UI: lock minimal clarity + patch scripts"
+git push
+printf "\n# runtime\nlogs/\n*.log\n" >> .gitignore
+git add .gitignore
+git commit -m "Chore: ignore runtime logs"
+git push
+
+# test intégral
+bash -lc "./scripts/autos.sh" 2>&1 | tee /opt/trading/logs/test_full_<TS>.log
+
+# snapshot backup pré ngrok/fw/tv
+BK=/opt/trading/backups/pre_ngrok_fw_tv_<TS>
+cp -a /etc/systemd/system/ngrok-tv.service "$BK/"
+cp -a /opt/trading/perf/perf_app.py "$BK/perf_app.py"
+cp -a /opt/trading/webhook_server.py "$BK/webhook_server.py"
+
+# patch ngrok-tv.service (stabilisation + pkill via shell)
+sudo sed -i 's#^ExecStartPre=.*#ExecStartPre=/bin/bash -lc '"'"'pkill -u ghost -x ngrok || true'"'"'#' /etc/systemd/system/ngrok-tv.service
+sudo systemctl daemon-reload
+sudo systemctl restart ngrok-tv.service
+
+# ngrok: extraction public_url via fichier (évite curl:23)
+curl -fsS http://127.0.0.1:4040/api/tunnels/command_line -o /tmp/ngrok_tunnel_cmdline.json
+python - <<'PY'
+import json
+d=json.load(open("/tmp/ngrok_tunnel_cmdline.json"))
+print(d.get("public_url",""))
+PY
+
+# routes FastAPI (avec python venv)
+./venv/bin/python - <<'PY'
+from webhook_server import app
+for r in app.router.routes:
+    if "POST" in (getattr(r,"methods",set()) or set()):
+        print(r.path, r.name)
+PY
+
+# POST externe validé via ngrok (engine réel + key)
+KEY="$(sudo awk -F= '/^TV_WEBHOOK_KEY=/{print $2; exit}' /opt/trading/.env)"
+curl -sS -i "https://phytogeographical-subnodulous-joycelyn.ngrok-free.dev/tv" \
+  -H "Content-Type: application/json" \
+  -d "{\"key\":\"$KEY\",\"engine\":\"XAU_M5_SCALP\",\"signal\":\"BUY\",\"symbol\":\"XAUUSD\",\"tf\":\"M5\",\"price\":1234.5,\"tp\":1240.0,\"sl\":1230.0,\"reason\":\"ngrok_buy_ok\"}"
+
+# perf: CLOSE trade
+curl -fsS http://127.0.0.1:8010/perf/event \
+  -H "Content-Type: application/json" \
+  -d '{"type":"CLOSE","trade_id":"T_20260216_183024_XAU_M5_SCALP_f4f04a","exit":1238.0}'
+```
+
+5) Points ouverts (next):
+- Éviter définitivement les corruptions de copier/coller dans l’UI (procédure stricte: micro-patches uniquement / patcher via fichiers).
+- Commit/push éventuel des changements systemd ngrok-tv (hors repo; documenter dans scripts/backup si besoin).
+- Optionnel: ignorer `backups/` dans `.gitignore` (actuellement `git status` montrait `?? backups/` au moment du snapshot).
+- Optionnel: corriger les scripts/tests qui utilisent `curl -I /perf/ui` (HEAD → 405 attendu) ou ajouter handler HEAD si souhaité.
