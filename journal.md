@@ -1799,3 +1799,186 @@ curl -sf http://127.0.0.1:8010/perf/ui >/dev/null && echo "UI: PASS" || echo "UI
 
 5) Points ouverts (next):
 - Identifier le fichier qui contient l’endpoint `@app.get("/perf/ui")` (chemin exact ou ~10 lignes autour) pour fournir un patch “copier-coller” d’une UI améliorée (KPIs, tables open/recent trades, bloc commandes utiles avec Copy/Open, mini form POST `/perf/event`, CSS, gestion erreurs, auto-refresh).
+
+## 2026-02-16 06:12 — algo 16
+1) Objectifs:
+- Rendre l’UI Perf accessible depuis Windows (LAN) et stabiliser les services/systemd + scripts de diag/smoke.
+- Valider un test final end-to-end (API + UI + smoke).
+
+2) Actions:
+- Déployé un patch depuis un ZIP vers `/opt/trading` (backup avant copie, `rsync` de `perf/` et `scripts/`).
+- Créé/activé `tv-perf.service` (Uvicorn FastAPI) sur `0.0.0.0:8010`.
+- Ajouté un override systemd pour `tv-webhook.service` sur `0.0.0.0:8000`.
+- Ajouté un wrapper d’exécution `bash -lc` avec `trap ERR` pour éviter la fermeture du terminal lors d’erreurs (`set -Eeuo pipefail`).
+- Exécuté `scripts/smoke.sh` + `scripts/diagnose.sh`; diag OK mais incohérence initiale (`SMOKE FAILED`) liée à variable `PERF_BASE`/`BASE`.
+- Réparé `scripts/diagnose.sh` (remplacement `PERF_BASE` → `BASE` + fallback `BASE` si absent).
+- Accident: `scripts/smoke.sh` a été corrompu lors d’un edit manuel; restauration via réécriture complète du script.
+- Diagnostic réseau Windows: Ping OK mais TCP 8010 KO; côté Debian, `tv-perf.service` échouait (port 8010 déjà utilisé).
+- Correction: kill du process occupant 8010 (PID 78706, bindé sur `127.0.0.1`), reset-failed + restart `tv-perf.service`, puis vérification `0.0.0.0:8010`.
+- Validation Windows: `Test-NetConnection` OK, UI chargée sur `http://192.168.16.155:8010/perf/ui` (capture fournie).
+- Vérification service: `tv-perf.service` active/running, écoute `0.0.0.0:8010`.
+- Lancement et réussite du test final end-to-end (services, ports, endpoints, UI GET, smoke OPEN→CLOSE→verify).
+
+3) Décisions:
+- Standardiser l’accès Windows via IP LAN Debian (pas `127.0.0.1`).
+- Forcer les binds réseau via `--host 0.0.0.0` pour `tv-perf` et `tv-webhook`.
+- Considérer le `405 Method Not Allowed` sur `HEAD /perf/ui` comme non bloquant (test final PASS malgré ce warning).
+
+4) Commandes / Code:
+```bash
+# Déploiement (avec trap anti-fermeture) + systemd + smoke/diag
+bash -lc '
+set -Eeuo pipefail
+trap '\''echo; echo "❌ ERREUR à la ligne $LINENO (code=$?)"; echo "➡️ Dernière commande: $BASH_COMMAND"; echo; read -r -p "Appuie Entrée pour fermer..." _; exit 1'\'' ERR
+
+ROOT="/opt/trading"
+ZIP="/home/ghost/Téléchargements/Magikgmo-main(1).zip"
+
+TS="$(date +%Y%m%d_%H%M%S)"
+BK="$ROOT/backup/$TS"
+mkdir -p "$BK"
+
+cp -a "$ROOT/perf/perf_app.py" "$BK/perf_app.py.bak" 2>/dev/null || true
+cp -a "/etc/systemd/system/tv-perf.service" "$BK/tv-perf.service.bak" 2>/dev/null || true
+cp -a "/etc/systemd/system/tv-webhook.service" "$BK/tv-webhook.service.bak" 2>/dev/null || true
+cp -a "/etc/systemd/system/tv-webhook.service.d" "$BK/tv-webhook.service.d.bak" 2>/dev/null || true
+
+TMP="/tmp/magik_${TS}"
+rm -rf "$TMP"; mkdir -p "$TMP"
+unzip -q "$ZIP" -d "$TMP"
+
+rsync -a "$TMP"/Magikgmo-main/perf/ "$ROOT"/perf/
+rsync -a "$TMP"/Magikgmo-main/scripts/ "$ROOT"/scripts/
+
+sudo tee /etc/systemd/system/tv-perf.service >/dev/null <<'\''EOF'\''
+[Unit]
+Description=Trading Perf API (FastAPI/Uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=1
+ExecStart=/opt/trading/venv/bin/python -m uvicorn perf.perf_app:app --host 0.0.0.0 --port 8010
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo mkdir -p /etc/systemd/system/tv-webhook.service.d
+sudo tee /etc/systemd/system/tv-webhook.service.d/override.conf >/dev/null <<'\''EOF'\''
+[Service]
+ExecStart=
+ExecStart=/opt/trading/venv/bin/python -m uvicorn webhook_server:app --host 0.0.0.0 --port 8000
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now tv-perf.service
+sudo systemctl restart tv-perf.service tv-webhook.service
+
+sudo ufw allow 8000/tcp >/dev/null 2>&1 || true
+sudo ufw allow 8010/tcp >/dev/null 2>&1 || true
+
+BASE="http://127.0.0.1:8010" ./scripts/smoke.sh
+./scripts/diagnose.sh || true
+
+IP="$(hostname -I | awk "{print \$1}")"
+echo "http://${IP}:8010/perf/ui"
+'
+```
+
+```bash
+# Fix diagnose.sh (PERF_BASE -> BASE + fallback)
+cd /opt/trading
+cp -a scripts/diagnose.sh scripts/diagnose.sh.bak.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+perl -0777 -i -pe 's/\bPERF_BASE\b/BASE/g' scripts/diagnose.sh
+grep -q 'BASE=' scripts/diagnose.sh || sed -i '1iBASE="${BASE:-http://127.0.0.1:8010}"' scripts/diagnose.sh
+chmod +x scripts/diagnose.sh
+```
+
+```bash
+# Restauration/réécriture smoke.sh (après corruption)
+cat > scripts/smoke.sh <<'BASH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PERF_BASE="${BASE:-http://127.0.0.1:8010}"
+WEBHOOK_BASE="${WEBHOOK_BASE:-http://127.0.0.1:8000}"
+
+say(){ echo "$*"; }
+die(){ echo "❌ $*"; exit 1; }
+
+say "[1/4] webhook health (best-effort)"
+curl -fsS "$WEBHOOK_BASE/api/state" >/dev/null 2>&1 || true
+
+say "[2/4] perf summary (wait-ready)"
+for i in {1..50}; do
+  if curl -fsS "$PERF_BASE/perf/summary" >/dev/null 2>&1; then break; fi
+  sleep 0.2
+  [[ "$i" == "50" ]] && die "perf not ready at $PERF_BASE"
+done
+
+say "[3/4] create dummy trade OPEN/CLOSE"
+TID="T_SMOKE_$(date +%Y%m%d_%H%M%S)"
+
+open_json="$(curl -fsS "$PERF_BASE/perf/event" \
+  -H "Content-Type: application/json" \
+  -d "{\"type\":\"OPEN\",\"trade_id\":\"$TID\",\"engine\":\"SMOKE\",\"symbol\":\"XAUUSD\",\"side\":\"LONG\",\"entry\":1.0,\"stop\":0.9,\"qty\":1.0,\"risk_usd\":0.1}")" || die "OPEN failed"
+
+echo "$open_json" | python -m json.tool >/dev/null 2>&1 || die "OPEN response not JSON: $open_json"
+
+close_json="$(curl -fsS "$PERF_BASE/perf/event" \
+  -H "Content-Type: application/json" \
+  -d "{\"type\":\"CLOSE\",\"trade_id\":\"$TID\",\"exit\":1.1}")" || die "CLOSE failed"
+
+echo "$close_json" | python -m json.tool >/dev/null 2>&1 || die "CLOSE response not JSON: $close_json"
+
+say "[4/4] verify trade appears"
+found="0"
+for i in {1..30}; do
+  if curl -fsS "$PERF_BASE/perf/trades?limit=50" | grep -q "$TID"; then found="1"; break; fi
+  sleep 0.2
+done
+[[ "$found" == "1" ]] || die "Trade not found in /perf/trades: $TID"
+
+echo "OK"
+BASH
+chmod +x scripts/smoke.sh
+```
+
+```bash
+# Conflit port 8010: tv-perf ne démarrait pas (address already in use) + fix
+sudo ss -lntp | grep :8010
+sudo kill 78706 || true
+sudo kill -9 78706 2>/dev/null || true
+sudo systemctl reset-failed tv-perf.service || true
+sudo systemctl restart tv-perf.service
+sudo ss -lntp | grep :8010
+```
+
+```powershell
+# Windows: diagnostic + validation
+Test-NetConnection 192.168.16.155 -Port 8010
+Invoke-WebRequest "http://192.168.16.155:8010/perf/summary"
+Start-Process "http://192.168.16.155:8010/perf/ui"
+```
+
+```bash
+# Test final Debian (résultat PASS, smoke OK; HEAD /perf/ui retourne 405)
+sudo systemctl is-active tv-perf.service
+sudo systemctl is-active tv-webhook.service
+sudo ss -lntp | grep -E ':8000|:8010'
+curl -fsS http://127.0.0.1:8010/perf/summary >/dev/null
+curl -fsS http://127.0.0.1:8010/perf/open    >/dev/null
+curl -fsS http://127.0.0.1:8010/perf/trades?limit=3 >/dev/null
+curl -fsS http://127.0.0.1:8010/perf/ui | head -c 40
+curl -sI  http://127.0.0.1:8010/perf/ui | head -n 1
+BASE="http://127.0.0.1:8010" WEBHOOK_BASE="http://127.0.0.1:8000" ./scripts/smoke.sh
+```
+
+5) Points ouverts (next):
+- Traiter (optionnel) le `405 Method Not Allowed` sur `HEAD /perf/ui` si on veut zéro warning (actuellement non bloquant, navigateur OK).
+- S’assurer que `scripts/smoke.sh` utilise `python3 -m json.tool` si `python -m json.tool` échoue selon environnements (mentionné comme correctif possible).
+- Nettoyage/standardisation pour éviter un lancement manuel qui reprend le port 8010 (process “fantôme”).
