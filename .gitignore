@@ -38,3 +38,6 @@ perf/perf.db
 
 # local backups
 scripts/*.bak.*
+
+# backups
+perf/perf_app.py.bak.*
