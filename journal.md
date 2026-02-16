@@ -1331,3 +1331,82 @@ sudo systemctl restart tv-webhook.service
 5) Points ouverts (next):
 - Finaliser le correctif UI pour déclencher réellement un POST `/perf/event` au clic “Send CLOSE” et rafraîchir automatiquement summary/open/trades (sans reload).
 - Confirmer le comportement ngrok/tv-webhook sur alertes TradingView (observer un POST entrant via `127.0.0.1:4040/api/requests/http`).
+
+## 2026-02-16 04:18 — resume projet
+1) Objectifs:
+- Analyser le dépôt GitHub généré (Magikgmo) et en faire une synthèse “par sessions” depuis l’instauration de `jpt "titre"`.
+- Présenter le projet (pitch) + identifier points à corriger/solidifier.
+- Archiver la conversation en priorité via une entrée `jpt`.
+- Produire un roadmap complet annoté + une indexation complète de la documentation.
+- Proposer un README “MAIN” (doc maître) sans entrer trop dans les détails.
+- Regrouper la documentation en un PDF imprimable, en éliminant les doublons.
+
+2) Actions:
+- Cartographie du repo (modules repérés) :
+  - Journalisation JPT : `tools/journal_from_paste.py`, `journal.md`, `journal/2026-02-11.md`.
+  - Webhook TradingView (FastAPI) : `webhook_server.py`, logs `logs/tv_webhooks.jsonl`, état `state/events.jsonl`, `state/risk_config.json`, `state/router_state.json`, UI `/dash`.
+  - Module performance : `perf/perf_app.py`, SQLite `perf/perf.db`, endpoints + UI `/perf/ui`.
+  - Jobs macro + Telegram : `jobs/macro_xau/` (dont `macro_xau.py` dupliqué), `shared/telegram_notify.py`.
+  - Base “strategy/domain model” : `strategy_logic.py`.
+- Synthèse “chronologie par sessions” (basée sur `journal/2026-02-11.md` + `journal.md`) : init serveur, validation journalisation, SSH GitHub, venv obligatoire, ngrok, ajout module perf, etc.
+- Rédaction d’une proposition de structure de docs : `README.md`, `docs/INDEX.md`, `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK.md`, `docs/API.md`, `docs/SCHEMAS.md`, `docs/SECURITY.md`.
+- Rédaction d’un roadmap annoté (L0→L7) + priorisation (Docs, Access Windows/LAN, Ops, Schémas, Risk, Engines, CI, Exécution optionnelle).
+- Rédaction d’un contenu “README MAIN” (vision, composants, quickstart, workflow `jpt`, sécurité).
+- Production annoncée d’un PDF imprimable consolidé (“Magikgmo_Project_Doc_2026-02-16.pdf”) incluant résumé, map repo, workflow JPT, architecture/routes, risk config, runbook, schémas, roadmap, checklist nettoyage/doublons.
+
+3) Décisions:
+- Ajouter une documentation “MAIN” stable + dossier `docs/` avec indexation stricte (docs par rôle, liens).
+- Maintenir le workflow : chaque session = `jpt` + commit/push.
+- Priorités techniques à solidifier : access Windows/LAN (bind/firewall), nettoyage duplications, schéma unique Event → Trade → Perf + adaptateur webhook→perf_event.
+- Sécurité : ne pas exposer `/tv` sans clé (signature HMAC évoquée comme amélioration future).
+
+4) Commandes / Code:
+```bash
+cd /opt/trading/Magikgmo
+jpt "Archive — Analyse repo + présentation + roadmap complet (README MAIN)"
+```
+
+```bash
+git status
+git add journal.md
+git commit -m "Archive: repo analysis + roadmap+readme main (2026-02-16)"
+git push
+```
+
+```bash
+mkdir -p docs
+nano docs/ROADMAP.md
+nano docs/INDEX.md
+nano README.md
+```
+
+Exemples de quickstart/test mentionnés :
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python webhook_server.py
+```
+
+```bash
+curl -s -X POST "http://127.0.0.1:8010/tv?key=$TV_WEBHOOK_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"engine":"XAU_M5_SCALP","symbol":"XAUUSD","side":"LONG","price":5032.5,"stop":5026.5}'
+```
+
+```bash
+python perf/perf_app.py
+```
+
+```bash
+curl -s http://127.0.0.1:8010/perf/event \
+  -H "Content-Type: application/json" \
+  -d '{"type":"CLOSE","trade_id":"T_EXAMPLE","exit":5040.0}'
+```
+
+5) Points ouverts (next):
+- Accessibilité depuis Windows : vérifier bind `0.0.0.0` vs `127.0.0.1`, firewall/ports, reverse proxy si nécessaire.
+- Nettoyage du code : duplication dans `jobs/macro_xau/macro_xau.py`, suspicion de sections “collées” dans `webhook_server.py`, doublons d’endpoints signalés.
+- Normaliser un schéma unique : Event (TradingView) → Trade → Perf, versionné (`schema_version`) + écrire l’adaptateur `webhook_event → perf_event`.
+- Formaliser services systemd, health endpoints, logrotate.
+- Finaliser la doc consolidée (PDF imprimable) en supprimant les doublons (contenu et repo).
