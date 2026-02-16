@@ -1500,3 +1500,121 @@ journalctl -u tv-webhook.service -n 80 --no-pager
 - Stabiliser la routine `diagnose.sh` (committer le fichier) et décider si les logs `logs/diagnostics/` doivent être exclus systématiquement.
 - Continuer les “cleanups” ciblés (macro_xau.py, webhook_server.py, endpoints perf potentiellement dupliqués) fichier par fichier avec smoke entre chaque commit.
 - Formaliser le schéma unique Event→Trade→Perf et brancher l’adaptateur dans le flux webhook (feature-flag).
+
+## 2026-02-16 05:32 — algo 12
+1) Objectifs:
+- Analyser le dépôt GitHub généré (modules, structure, historique “JPT”).
+- Archiver la conversation et produire une doc complète (README MAIN + docs indexées + roadmap).
+- Appliquer un patch “fixed” sur le serveur Debian (backup, déploiement safe), sans casser l’existant.
+- Stabiliser une routine de tests (smoke + diagnostic + logs) et l’automatiser.
+
+2) Actions:
+- Cartographie repo (journalisation JPT, webhook TradingView FastAPI, perf module SQLite+UI, jobs macro, Telegram, state/logs, strategy_logic).
+- Génération de docs/ (INDEX, ROADMAP, RUNBOOK, API, SCHEMAS, ARCHITECTURE) + README MAIN ; création schemas/ et adapters/webhook_to_perf.py ; ajout scripts/smoke.sh.
+- Tentative de patch via rsync avec `--delete` depuis un sous-dossier source situé dans la destination (`/opt/trading/_patch/...`) → suppression partielle/“vanished files” → restauration via backup tar.gz.
+- Patch réappliqué correctement en extrayant le zip dans `/tmp` puis rsync avec exclusions (`.git/ state/ logs/ perf/perf.db .env journal.md`), commit/push, puis rollback Git (reset/force-push) vers commit pré-patch pour recommencer en petits commits.
+- Recréation du venv (car `venv/bin/python` manquant), installation dépendances manquantes (uvicorn/fastapi), redémarrage systemd `tv-webhook.service` (203/EXEC puis “No module named uvicorn” résolus).
+- Fix smoke.sh (JSON cassé) via heredoc ; identification que `curl -I` (HEAD) provoque 405 sur perf/webhook.
+- Ajout/commit `.gitignore` pour ignorer `perf/perf.db`, backups smoke, logs diagnostics ; création + commit `scripts/diagnose.sh` (routine test+log) ; création `scripts/autos.sh` (restart+smoke+diagnose+ngrok checks).
+- Vérification ngrok via API locale `:4040` (tunnel HTTPS public_url vers `localhost:8000`, hits visibles).
+- Observation d’erreurs ngrok dans journaux (`ERR_NGROK_334 endpoint already online`) lors de restarts.
+
+3) Décisions:
+- Patcher en “v2” par petits commits (docs/schemas/smoke, puis adapter, puis cleanups ciblés) au lieu d’un rsync global.
+- Toujours extraire le zip patch hors du repo (ex `/tmp`) si `rsync --delete` est utilisé.
+- Exclure systématiquement `.git/ state/ logs/ perf/perf.db .env journal.md` lors des patchs.
+- Stabiliser la routine de validation via scripts (smoke + diagnose + autos) et journaliser les sorties.
+
+4) Commandes / Code:
+```bash
+# Backup avant patch (exclusion venv/pycache)
+cd /opt || exit 1
+ts=$(date +%Y%m%d_%H%M%S)
+sudo tar -czf "/opt/trading_BACKUP_${ts}.tar.gz" --exclude='trading/venv' --exclude='trading/__pycache__' trading
+sudo tar -czf "/opt/trading_STATELOGS_${ts}.tar.gz" trading/state trading/logs trading/perf/perf.db 2>/dev/null || true
+```
+
+```bash
+# Erreur rencontrée: rsync absent puis installation (proposée)
+sudo apt-get update
+sudo apt-get install -y rsync unzip
+```
+
+```bash
+# Restauration complète après rsync --delete mal utilisé
+sudo systemctl stop tv-webhook.service 2>/dev/null || true
+cd /opt || exit 1
+sudo rm -rf /opt/trading
+sudo tar -xzf /opt/trading_BACKUP_20260216_043219.tar.gz
+sudo systemctl start tv-webhook.service 2>/dev/null || true
+```
+
+```bash
+# Patch correct: source hors repo
+rm -rf /tmp/magikgmo_patch
+mkdir -p /tmp/magikgmo_patch
+unzip -q /opt/trading/Magikgmo-main-fixed.zip -d /tmp/magikgmo_patch
+
+cd /opt/trading || exit 1
+rsync -avi --delete \
+  --exclude '.git/' --exclude 'state/' --exclude 'logs/' --exclude 'perf/perf.db' \
+  --exclude '.env' --exclude 'journal.md' \
+  /tmp/magikgmo_patch/Magikgmo-main/ .
+```
+
+```bash
+# Rollback Git vers commit avant patch + force push
+cd /opt/trading || exit 1
+sudo systemctl stop tv-webhook.service 2>/dev/null || true
+git reset --hard 4428c7d
+git clean -fd
+git push --force
+sudo systemctl start tv-webhook.service 2>/dev/null || true
+```
+
+```bash
+# Recréation venv + deps
+cd /opt/trading || exit 1
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip
+rm -rf venv
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install -U pip wheel
+pip install -r requirements.txt
+pip install "fastapi==0.115.6" "uvicorn[standard]==0.34.0"
+sudo systemctl restart tv-webhook.service
+```
+
+```bash
+# Smoke fix (heredoc JSON) + test
+BASE=http://127.0.0.1:8010 ./scripts/smoke.sh
+```
+
+```bash
+# Diagnose routine (création + exécution + logs horodatés)
+./scripts/diagnose.sh
+tail -n 200 logs/diagnostics/diag_*.log
+```
+
+```bash
+# Ngrok checks
+curl -s http://127.0.0.1:4040/api/tunnels | python -m json.tool | head -n 80
+curl -s http://127.0.0.1:4040/api/requests/http | head -c 1200 ; echo
+```
+
+```bash
+# Commits réalisés (exemples cités dans la conversation)
+git commit -m "Docs+Schemas: add docs, schemas, smoke script"
+git commit -m "Adapter: webhook_event -> perf_event"
+git commit -m "Fix smoke: proper heredoc JSON payloads"
+git commit -m "Chore: ignore perf db and smoke backups"
+git commit -m "Chore: stop tracking perf db"
+git commit -m "Add diagnose routine + ignore runtime logs/db"
+```
+
+5) Points ouverts (next):
+- `scripts/autos.sh` laisse `scripts/autos.sh` non suivi (diagnose signale `?? scripts/autos.sh`) → décider de le committer.
+- `diagnose.sh` relance parfois `smoke.sh` avec une base incorrecte (symptôme: smoke OK au début d’autos puis “SMOKE FAILED” dans diagnose) → à corriger en séparant WEBHOOK_BASE=8000 et PERF_BASE=8010 dans diagnose.
+- ngrok: journaux `ERR_NGROK_334 endpoint already online` lors des restarts → éviter de restart ngrok si déjà actif (ou clarifier la stratégie de gestion du tunnel/service).
+- Restes: modifications de smoke/diagnose faites via commandes “perl” fragiles (erreurs perl observées) → privilégier réécriture via heredoc/cat ou patch simple.
