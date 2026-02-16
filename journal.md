@@ -1754,3 +1754,48 @@ BASE="http://127.0.0.1:8010" WEBHOOK_BASE="http://127.0.0.1:8000" ./scripts/smok
 5) Points ouverts (next):
 - Optionnel: supporter `HEAD` sur `/perf/ui` (actuellement `HTTP/1.1 405 Method Not Allowed`, non bloquant) ou ajuster le test pour utiliser GET uniquement.
 - Optionnel: finaliser/standardiser définitivement `diagnose.sh` (variables BASE/PERF_BASE) si d’autres checks l’utilisent.
+
+## 2026-02-16 06:12 — algo 15
+1) Objectifs:
+- Finaliser la solution Perf Control Center et continuer la session après interruption.
+- Rendre l’UI /perf/ui accessible depuis Windows (LAN) et valider les endpoints.
+- Éliminer le warning 405 lié à `HEAD /perf/ui` (optionnel).
+- Prochaine étape visée: optimiser l’UI “direction pro”.
+
+2) Actions:
+- Clarification: `curl -I` envoie `HEAD` ⇒ `405 Method Not Allowed` car `/perf/ui` est GET-only.
+- Recommandation appliquée: exposer FastAPI/uvicorn sur `0.0.0.0` + accès Windows via `http://IP_DEBIAN:8010/perf/ui` + ouverture firewall si nécessaire.
+- Validation finale rapportée: services `tv-perf` et `tv-webhook` actifs; bind `0.0.0.0:8000` et `0.0.0.0:8010`; endpoints `/perf/summary`, `/perf/open`, `/perf/trades` OK; UI HTML OK; smoke test OPEN→CLOSE→verify OK; Windows TCP/UI OK.
+- Choix et application de l’option “zéro warning”: remplacer le check HEAD par un GET.
+- Tests exécutés: checks `curl` sur `/perf/ui` et `/perf/summary` retournent HTTP 200; `UI: PASS`.
+
+3) Décisions:
+- Considérer `405 sur HEAD /perf/ui` comme non bloquant.
+- Choisir l’Option 1 (modifier le script de check pour faire un GET au lieu de HEAD).
+- Next: optimisation UI (KPIs, tables, outils opérationnels, commandes utiles avec Copy/Open, form POST /perf/event, CSS/UX pro).
+
+4) Commandes / Code:
+```bash
+# Service systemd (exemple ExecStart uvicorn) pour écoute LAN
+ExecStart=/opt/trading/venv/bin/uvicorn webhook_server:app --host 0.0.0.0 --port 8010
+
+sudo systemctl daemon-reload
+sudo systemctl restart tv-webhook.service
+sudo systemctl status tv-webhook.service --no-pager -l
+
+# Firewall (si UFW actif)
+sudo ufw allow 8010/tcp
+```
+
+```bash
+# Checks GET (remplace le HEAD/curl -I)
+curl -s http://127.0.0.1:8010/perf/ui >/dev/null && echo OK
+
+curl -s -o /dev/null -w "UI /perf/ui HTTP=%{http_code}\n" http://127.0.0.1:8010/perf/ui
+curl -s -o /dev/null -w "API /perf/summary HTTP=%{http_code}\n" http://127.0.0.1:8010/perf/summary
+
+curl -sf http://127.0.0.1:8010/perf/ui >/dev/null && echo "UI: PASS" || echo "UI: FAIL"
+```
+
+5) Points ouverts (next):
+- Identifier le fichier qui contient l’endpoint `@app.get("/perf/ui")` (chemin exact ou ~10 lignes autour) pour fournir un patch “copier-coller” d’une UI améliorée (KPIs, tables open/recent trades, bloc commandes utiles avec Copy/Open, mini form POST `/perf/event`, CSS, gestion erreurs, auto-refresh).
