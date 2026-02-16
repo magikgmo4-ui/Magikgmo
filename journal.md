@@ -857,3 +857,77 @@ perf_open(
 - Lire la clé webhook dans `/opt/trading/.env` via `sudo`, puis retester POST `/tv` avec la vraie key pour valider le branch end-to-end (OPEN créé dans perf + `last_event_ts` mis à jour).
 - Confirmer que `risk_quote` retourne des valeurs valides pour l’engine utilisé (sinon choisir un engine existant dans `risk_config.json`).
 - (Optionnel) Ajouter un endpoint `/perf/open` pour lister les trades OPEN et faciliter la récupération des `trade_id` pour CLOSE manuel.
+
+## 2026-02-16 00:11 — algo 5
+1) Objectifs:
+- Continuer la session “analyse technique multi-actifs” sans alourdir le navigateur.
+- Valider la chaîne TradingView → ngrok → FastAPI (/tv) → écriture journal, en mode always-on (systemd).
+
+2) Actions:
+- Smoke test webhook via URL publique ngrok (`POST /tv`) et vérification du retour `{"ok":true}`.
+- Vérification des requêtes entrantes via l’API d’inspection ngrok (`127.0.0.1:4040`).
+- Vérification de l’écriture dans `/opt/trading/journal.md` (entrée ajoutée avec payload).
+- Redémarrage et vérification des services systemd:
+  - `tv-webhook.service` (Uvicorn/FastAPI sur `*:8000`)
+  - `ngrok-tv.service` (tunnel vers `http://localhost:8000`)
+- Kill d’un ngrok lancé en ligne de commande puis relance via service systemd.
+- Vérification process/ports (`pgrep -a ngrok`, `lsof -i :8000`) et tunnels ngrok (`/api/tunnels`).
+- Consultation `journalctl` confirmant des `POST /tv` en `200 OK`; observation d’anciens essais “address already in use” avant stabilisation.
+
+3) Décisions:
+- Stack validé “always-on” via systemd (FastAPI + ngrok).
+- Attendre un déclenchement réel d’une alerte TradingView (Windows) pour confirmer la chaîne complète.
+- Repo GitHub public laissé tel quel pour le moment (pas de refactor/structure maintenant).
+
+4) Commandes / Code:
+```bash
+# smoke test externe via ngrok
+curl -s -X POST https://phytogeographical-subnodulous-joycelyn.ngrok-free.dev/tv \
+  -H "Content-Type: application/json" \
+  -d '{"key":"GHOST_XAU_2026_ULTRA","engine":"TV_TEST","signal":"BUY","symbol":"BTCUSDT.P","tf":"60","price":111,"tp":222,"sl":333,"reason":"post_restart_smoke"}' ; echo
+
+# inspect ngrok
+curl -s http://127.0.0.1:4040/api/requests/http | head
+curl -s http://127.0.0.1:4040/api/requests/http | head -c 300 ; echo
+curl -s http://127.0.0.1:4040/api/tunnels | python -m json.tool | head -n 60
+
+# journal
+tail -n 20 /opt/trading/journal.md
+tail -n 30 /opt/trading/journal.md
+
+# services
+sudo systemctl restart tv-webhook.service
+sudo systemctl status tv-webhook.service --no-pager
+sudo systemctl restart ngrok-tv.service
+sudo systemctl status ngrok-tv.service --no-pager
+
+# process/ports
+pgrep -a ngrok
+pkill ngrok
+lsof -i :8000
+
+# logs services
+journalctl -u tv-webhook.service -n 40 --no-pager
+journalctl -u tv-webhook.service -n 80 --no-pager
+journalctl -u ngrok-tv.service -n 50 --no-pager
+```
+
+```json
+{
+  "key": "GHOST_XAU_2026_ULTRA",
+  "engine": "TV_TEST",
+  "signal": "BUY",
+  "symbol": "BTCUSDT.P",
+  "tf": "60",
+  "price": 111.0,
+  "tp": 222.0,
+  "sl": 333.0,
+  "reason": "post_restart_smoke"
+}
+```
+
+5) Points ouverts (next):
+- Attendre un “fire” réel TradingView et vérifier:
+  - hit entrant ngrok (`curl http://127.0.0.1:4040/api/requests/http`)
+  - nouvelle entrée dans `/opt/trading/journal.md`
+- Si hit ngrok sans entrée journal: diagnostiquer via `journalctl -u tv-webhook.service` (ex: 403 key/validation).
