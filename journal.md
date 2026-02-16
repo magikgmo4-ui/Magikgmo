@@ -597,3 +597,107 @@ f_json(_signal, _tp, _sl, _reason) =>
 - Nettoyage du journal `/opt/trading/journal.md` (il contient des sections/commandes “parasites” en haut).
 - Vérifier en live que chaque script Pine PROD envoie bien `key` et que le serveur refuse sans key (403).
 - Finaliser la procédure opérationnelle : quand/qui fait `reset lock`, et conventions `reason`/naming pour le routage.
+
+## 2026-02-15 18:53 | TV Webhook | TV_TEST | BTCUSDT.P 60 | BUY
+
+1. **Signal**: `BUY`
+2. **Engine**: `TV_TEST`
+3. **Symbol/TF**: `BTCUSDT.P` / `60`
+4. **Price**: `111.0`
+5. **TP**: `222.0`
+6. **SL**: `333.0`
+7. **Reason**: post_restart_smoke
+8. **Payload brut**:
+```json
+{
+  "key": "GHOST_XAU_2026_ULTRA",
+  "engine": "TV_TEST",
+  "signal": "BUY",
+  "symbol": "BTCUSDT.P",
+  "tf": "60",
+  "price": 111.0,
+  "tp": 222.0,
+  "sl": 333.0,
+  "reason": "post_restart_smoke"
+}
+```
+
+## 2026-02-15 18:59 | TV Webhook | TV_TEST | BTCUSDT.P 60 | BUY
+
+1. **Signal**: `BUY`
+2. **Engine**: `TV_TEST`
+3. **Symbol/TF**: `BTCUSDT.P` / `60`
+4. **Price**: `111.0`
+5. **TP**: `222.0`
+6. **SL**: `333.0`
+7. **Reason**: post_restart_smoke
+8. **Payload brut**:
+```json
+{
+  "key": "GHOST_XAU_2026_ULTRA",
+  "engine": "TV_TEST",
+  "signal": "BUY",
+  "symbol": "BTCUSDT.P",
+  "tf": "60",
+  "price": 111.0,
+  "tp": 222.0,
+  "sl": 333.0,
+  "reason": "post_restart_smoke"
+}
+```
+
+## 2026-02-15 19:05 — ngrok
+1) Objectifs:
+- Confirmer le fonctionnement end-to-end du webhook TradingView via ngrok après restart (ngrok → FastAPI/Uvicorn → journal).
+- Passer les services en mode always-on (systemd) et valider l’URL publique.
+- Préparer la vérification du “fire” réel depuis TradingView (Windows).
+
+2) Actions:
+- Restart du service FastAPI: `tv-webhook.service` (écoute sur `*:8000`).
+- Identification d’un ngrok lancé en manuel (`pgrep -a ngrok`), arrêt (`pkill ngrok`), puis démarrage du service systemd `ngrok-tv.service`.
+- Vérification du tunnel via l’API ngrok `127.0.0.1:4040/api/tunnels` (URL publique active).
+- Vérification que l’inspect buffer ngrok est vide après restart.
+- Smoke test POST externe via l’URL ngrok sur `/tv` avec payload JSON incluant `key`.
+- Contrôle: inspect ngrok (`/api/requests/http`) devient non vide + nouvelle entrée ajoutée à `/opt/trading/journal.md`.
+- Validation finale: “GO TradingView”, attente d’un vrai déclenchement d’alerte TV.
+
+3) Décisions:
+- Mettre FastAPI (uvicorn) et ngrok en services systemd (always-on), avec un seul ngrok actif (éviter le manuel + service en parallèle).
+- URL webhook TradingView à utiliser: `https://phytogeographical-subnodulous-joycelyn.ngrok-free.dev/tv`
+- Configuration TradingView par script: Condition “Any alert() function call”, Message `{{alert_message}}`.
+- Prochaine étape: attendre un “fire” réel TradingView (tests curl déjà OK).
+
+4) Commandes / Code:
+```bash
+sudo systemctl restart tv-webhook.service
+sudo systemctl status tv-webhook.service --no-pager
+
+pgrep -a ngrok
+pkill ngrok
+
+sudo systemctl restart ngrok-tv.service
+sudo systemctl status ngrok-tv.service --no-pager
+
+curl -s http://127.0.0.1:4040/api/tunnels | python -m json.tool | head -n 60
+curl -s http://127.0.0.1:4040/api/requests/http | head -c 400 ; echo
+
+lsof -i :8000
+
+# Smoke test externe via ngrok
+curl -s -X POST https://phytogeographical-subnodulous-joycelyn.ngrok-free.dev/tv \
+  -H "Content-Type: application/json" \
+  -d '{"key":"GHOST_XAU_2026_ULTRA","engine":"TV_TEST","signal":"BUY","symbol":"BTCUSDT.P","tf":"60","price":111,"tp":222,"sl":333,"reason":"post_restart_smoke"}' ; echo
+
+tail -n 30 /opt/trading/journal.md
+
+# Ops/monitoring
+sudo systemctl status tv-webhook.service --no-pager
+sudo systemctl status ngrok-tv.service --no-pager
+journalctl -u tv-webhook.service -n 40 --no-pager
+```
+
+5) Points ouverts (next):
+- Attendre un déclenchement réel d’une alerte TradingView et vérifier:
+  - hit entrant ngrok (`/api/requests/http`)
+  - ajout dans `/opt/trading/journal.md`
+- Si hit ngrok sans entrée journal: diagnostiquer via `journalctl -u tv-webhook.service` (ex: 403 key/validation).

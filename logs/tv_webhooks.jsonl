@@ -4,3 +4,5 @@
 {"ts": "2026-02-15T17:13:42.243082-05:00", "payload": {"key": "GHOST_XAU_2026_ULTRA", "engine": "USDTM_LONG", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "60", "price": 68000, "tp": 70000, "sl": 67000}}
 {"ts": "2026-02-15T18:00:01.818033-05:00", "payload": {"engine": "TV_TEST", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "60", "price": 68959.9, "tp": 0, "sl": 0}}
 {"ts": "2026-02-15T18:31:21.838538-05:00", "payload": {"key": "GHOST_XAU_2026_ULTRA", "engine": "TV_TEST", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "60", "price": 111, "tp": 222, "sl": 333, "reason": "restart_ok"}}
+{"ts": "2026-02-15T18:53:44.744688-05:00", "payload": {"key": "GHOST_XAU_2026_ULTRA", "engine": "TV_TEST", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "60", "price": 111, "tp": 222, "sl": 333, "reason": "post_restart_smoke"}}
+{"ts": "2026-02-15T18:59:32.619110-05:00", "payload": {"key": "GHOST_XAU_2026_ULTRA", "engine": "TV_TEST", "signal": "BUY", "symbol": "BTCUSDT.P", "tf": "60", "price": 111, "tp": 222, "sl": 333, "reason": "post_restart_smoke"}}
