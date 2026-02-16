@@ -490,13 +490,8 @@ async function refreshAll(){
 
 async function closeTrade(){
   const id = document.getElementById("close_id").value.trim();
-  const exitEl = document.getElementById("close_exit");
-  const exStr = ((exitEl && exitEl.value) ? exitEl.value : (exitEl ? exitEl.placeholder : "")).trim();
-  const ex = parseFloat(exStr);
-  if(!id || !isFinite(ex)){
-    document.getElementById("close_res").textContent = "missing trade_id or exit (tip: type an exit price; placeholder is not sent)";
-    return;
-  }
+  const ex = parseFloat(document.getElementById("close_exit").value);
+  if(!id || !isFinite(ex)){ document.getElementById("close_res").textContent="missing trade_id or exit"; return; }
   const r = await fetch("/perf/event", {
     method:"POST",
     headers:{ "Content-Type":"application/json" },

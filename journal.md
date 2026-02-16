@@ -1263,3 +1263,71 @@ perf_open(engine=engine, symbol=symbol, side=side, entry=price, stop=sl, qty=q["
 - Ajouter (si retenu) `GET /perf/ui` et valider affichage sur Debian.
 - Décider stratégie d’accès Windows (SSH tunnel / bind 0.0.0.0 / ngrok) si besoin ultérieur.
 - Éventuel: harmoniser `risk_usd` envoyé à perf (préférer `risk_real_usd`) partout.
+
+## 2026-02-16 02:25 — algo 9
+1) Objectifs:
+- Reprendre la session Perf Control Center et diagnostiquer le problème “Send CLOSE” (405 / fermeture impossible) + valider le flux OPEN→CLOSE avec tv-webhook/ngrok.
+
+2) Actions:
+- Vérification UI Perf: http://127.0.0.1:8010/perf/ui accessible; métriques: total_trades=3, closed_trades=3, open_trades=0, winrate=100%, pnl_realized≈62.2, equity≈10062.2.
+- Diagnostic 405: identifié que `curl -I` envoie HEAD; l’endpoint testait n’autorise que GET (allow: GET).
+- Utilisation DevTools Réseau: corrigé l’erreur de contexte (DevTools ouvert sur l’onglet ChatGPT au lieu de l’onglet Perf), puis observation des requêtes réelles.
+- Constat: aucune requête “close” n’apparaît au clic “Send CLOSE”; confirmé ensuite qu’il n’y avait aucun trade OPEN (`/perf/open` renvoie open=[]).
+- Inspection OpenAPI: `/openapi.json` montre une seule route d’écriture `POST /perf/event` (type OPEN|CLOSE|UPDATE); pas de route dédiée `/perf/close`.
+- Création d’un trade OPEN via `POST /perf/event`, puis tentative de fermeture via UI: UI affiche “missing trade_id or exit” malgré champs remplis (bug lecture des champs / placeholder).
+- Application d’un patch UI (dans `perf/perf_app.py`) pour rendre la fermeture robuste (fallback placeholder pour exit).
+- Fermeture validée via API: réponse `{ok:true, event_id:..., trade_id:..., ts:...}` puis vérification finale: `/perf/open` vide et trade en CLOSED dans `/perf/trades`.
+
+3) Décisions:
+- Standardiser l’écriture d’événements sur `POST /perf/event` (OPEN/CLOSE) côté UI; abandon de l’hypothèse d’un endpoint `/perf/close`.
+- Corriger l’UI “Close trade” pour: lire correctement `trade_id` + `exit` et envoyer un `fetch` POST JSON vers `/perf/event`; gérer le cas exit non saisi (placeholder non envoyé).
+
+4) Commandes / Code:
+```bash
+# Vérifier open trades et historique
+curl -s http://127.0.0.1:8010/perf/open
+curl -s "http://127.0.0.1:8010/perf/trades?limit=50"
+
+# Inspecter l'OpenAPI pour trouver les routes
+curl -s http://127.0.0.1:8010/openapi.json | head
+
+# Créer un OPEN (test manuel)
+curl -s -X POST "http://127.0.0.1:8010/perf/event" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "OPEN",
+    "engine": "XAU_M5_SCALP",
+    "symbol": "XAUUSD",
+    "side": "LONG",
+    "entry": 5032.5,
+    "stop": 5026.5,
+    "qty": 0.2,
+    "risk_usd": 12.0,
+    "meta": {"src":"manual_test"}
+  }'
+
+# Fermer (CLOSE) (test manuel)
+curl -s -X POST "http://127.0.0.1:8010/perf/event" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "CLOSE",
+    "trade_id": "T_20260216_015408_XAU_M5_SCALP_224a57",
+    "exit": 5038.5,
+    "meta": {"src":"manual_close"}
+  }'
+
+# Vérification finale
+curl -s http://127.0.0.1:8010/perf/open
+curl -s "http://127.0.0.1:8010/perf/trades?limit=5"
+```
+
+```bash
+# Application patch fichier (procédure indiquée)
+cp /opt/trading/perf/perf_app.py /opt/trading/perf/perf_app.py.bak
+# cp /path/to/perf_app_patched.py /opt/trading/perf/perf_app.py
+sudo systemctl restart tv-webhook.service
+```
+
+5) Points ouverts (next):
+- Finaliser le correctif UI pour déclencher réellement un POST `/perf/event` au clic “Send CLOSE” et rafraîchir automatiquement summary/open/trades (sans reload).
+- Confirmer le comportement ngrok/tv-webhook sur alertes TradingView (observer un POST entrant via `127.0.0.1:4040/api/requests/http`).
