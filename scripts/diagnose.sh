@@ -59,8 +59,8 @@ echo
 echo "== curl quick map ports 8000/8010 =="
 for p in 8000 8010; do
   echo "--- port $p ---"
-  curl -sS -I "http://127.0.0.1:$p/api/state" | head -n 5 || true
-  curl -sS -I "http://127.0.0.1:$p/perf/summary" | head -n 5 || true
+  curl -sS -D- -o /dev/null "http://127.0.0.1:$p/api/state" | head -n 5 || true
+  curl -sS -D- -o /dev/null "http://127.0.0.1:$p/perf/summary" | head -n 5 || true
 done
 echo
 

@@ -18,7 +18,7 @@ for i in {1..50}; do
 done
 
 say "[3/4] create dummy trade OPEN/CLOSE"
-TID="T_SMOKE_$(date +%Y%m%d_%H%M%S)"
+TID="T_SMOKE_$(date +%Y%m%d_%H%M%S)_${RANDOM}_${RANDOM}"
 
 open_json="$(curl -fsS "$PERF_BASE/perf/event" \
   -H "Content-Type: application/json" \

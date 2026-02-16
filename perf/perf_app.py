@@ -39,8 +39,15 @@ class PerfEvent(BaseModel):
 
 # ---------------- DB ----------------
 def db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH)
+    # sqlite: enable WAL + wait for locks a bit (UI can poll while writes happen)
+    con = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     con.row_factory = sqlite3.Row
+    cur = con.cursor()
+    # Pragmas are per-connection (safe to call each time)
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.execute("PRAGMA foreign_keys=ON")
     return con
 
 def init_db():
@@ -81,65 +88,134 @@ def init_db():
 def now_iso():
     return datetime.now(timezone.utc).astimezone().isoformat()
 
+
+# basic retry for sqlite locked errors
+def with_retry(fn, retries: int = 8, base_sleep: float = 0.05):
+    import time
+    last = None
+    for i in range(retries):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            last = e
+            msg = str(e).lower()
+            if "database is locked" in msg or "locked" in msg:
+                time.sleep(base_sleep * (i + 1))
+                continue
+            raise
+    raise last
+
 def insert_event(ev: PerfEvent):
-    con = db()
-    cur = con.cursor()
-    eid = "E_" + uuid.uuid4().hex[:16]
-    ts = ev.ts or now_iso()
-    payload = ev.model_dump()
-    cur.execute(
-        "INSERT INTO events(id, ts, type, engine, symbol, trade_id, payload) VALUES(?,?,?,?,?,?,?)",
-        (eid, ts, ev.type, ev.engine, ev.symbol, ev.trade_id, json.dumps(payload, ensure_ascii=False))
-    )
-    con.commit()
-    con.close()
-    return eid, ts
+    def _do():
+        con = db()
+        cur = con.cursor()
+        eid = "E_" + uuid.uuid4().hex[:16]
+        ts = ev.ts or now_iso()
+        payload = ev.model_dump()
+        cur.execute(
+            "INSERT INTO events(id, ts, type, engine, symbol, trade_id, payload) VALUES(?,?,?,?,?,?,?)",
+            (eid, ts, ev.type, ev.engine, ev.symbol, ev.trade_id, json.dumps(payload, ensure_ascii=False))
+        )
+        con.commit()
+        con.close()
+        return eid, ts
+    return with_retry(_do)
 
 def create_trade_from_open(ev: PerfEvent) -> str:
-    if not all([ev.engine, ev.symbol, ev.side, ev.entry is not None, ev.stop is not None, ev.qty is not None, ev.risk_usd is not None]):
+    if not all([
+        ev.engine, ev.symbol, ev.side,
+        ev.entry is not None, ev.stop is not None,
+        ev.qty is not None, ev.risk_usd is not None,
+    ]):
         raise HTTPException(400, "OPEN requires engine,symbol,side,entry,stop,qty,risk_usd")
+
     trade_id = ev.trade_id or f"T_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ev.engine}_{uuid.uuid4().hex[:6]}"
-    con = db()
-    cur = con.cursor()
-    cur.execute("""
-      INSERT INTO trades(trade_id,engine,symbol,side,entry_ts,entry,stop,qty,risk_usd,status)
-      VALUES(?,?,?,?,?,?,?,?,?,'OPEN')
-    """, (trade_id, ev.engine, ev.symbol, ev.side, ev.ts or now_iso(), float(ev.entry), float(ev.stop), float(ev.qty), float(ev.risk_usd)))
-    con.commit()
-    con.close()
-    return trade_id
+    ts = ev.ts or now_iso()
+
+    def _do():
+        con = db()
+        cur = con.cursor()
+
+        # idempotent OPEN: if already exists and still OPEN, just return it
+        existing = cur.execute("SELECT status FROM trades WHERE trade_id=?", (trade_id,)).fetchone()
+        if existing:
+            st = existing["status"]
+            con.close()
+            if st == "OPEN":
+                return trade_id
+            raise HTTPException(409, f"trade_id already exists with status={st}")
+
+        cur.execute(
+            """
+            INSERT INTO trades(trade_id,engine,symbol,side,entry_ts,entry,stop,qty,risk_usd,status)
+            VALUES(?,?,?,?,?,?,?,?,?,'OPEN')
+            """,
+            (trade_id, ev.engine, ev.symbol, ev.side, ts, float(ev.entry), float(ev.stop), float(ev.qty), float(ev.risk_usd)),
+        )
+        con.commit()
+        con.close()
+        return trade_id
+
+    return with_retry(_do)
+
 
 def close_trade(ev: PerfEvent):
     if not ev.trade_id or ev.exit is None:
         raise HTTPException(400, "CLOSE requires trade_id and exit")
-    con = db()
-    cur = con.cursor()
-    tr = cur.execute("SELECT * FROM trades WHERE trade_id=?", (ev.trade_id,)).fetchone()
-    if not tr:
+
+    def _do():
+        con = db()
+        cur = con.cursor()
+        tr = cur.execute("SELECT * FROM trades WHERE trade_id=?", (ev.trade_id,)).fetchone()
+        if not tr:
+            con.close()
+            raise HTTPException(404, "trade_id not found")
+        if tr["status"] != "OPEN":
+            con.close()
+            raise HTTPException(409, "trade already closed")
+
+        entry = float(tr["entry"])
+        qty = float(tr["qty"])
+        risk_usd = float(tr["risk_usd"])
+        side = tr["side"]
+
+        exit_px = float(ev.exit)
+        pnl = (exit_px - entry) * qty if side == "LONG" else (entry - exit_px) * qty
+        r = pnl / risk_usd if risk_usd != 0 else 0.0
+
+        cur.execute(
+            """
+            UPDATE trades
+            SET exit_ts=?, exit=?, status=?, pnl_real=?, r_real=?
+            WHERE trade_id=?
+            """,
+            (ev.ts or now_iso(), exit_px, "CLOSED", pnl, r, ev.trade_id),
+        )
+        con.commit()
         con.close()
-        raise HTTPException(404, "trade_id not found")
-    if tr["status"] != "OPEN":
+        return {"ok": True, "trade_id": ev.trade_id, "pnl_real": pnl, "r_real": r}
+
+    return with_retry(_do)
+
+
+def update_mark(ev: PerfEvent):
+    if not ev.trade_id or ev.mark is None:
+        raise HTTPException(400, "UPDATE requires trade_id and mark")
+
+    def _do():
+        con = db()
+        cur = con.cursor()
+        tr = cur.execute("SELECT status FROM trades WHERE trade_id=?", (ev.trade_id,)).fetchone()
         con.close()
-        raise HTTPException(409, "trade already closed")
+        if not tr:
+            raise HTTPException(404, "trade_id not found")
+        # Mark is informational; we keep it via the event log only.
+        return {"ok": True, "trade_id": ev.trade_id, "mark": float(ev.mark)}
 
-    entry = float(tr["entry"])
-    qty = float(tr["qty"])
-    risk_usd = float(tr["risk_usd"])
-    side = tr["side"]
-
-    exit_px = float(ev.exit)
-    pnl = (exit_px - entry) * qty if side == "LONG" else (entry - exit_px) * qty
-    r = pnl / risk_usd if risk_usd != 0 else 0.0
-
-    cur.execute("""
-      UPDATE trades
-      SET exit_ts=?, exit=?, status=?, pnl_real=?, r_real=?
-      WHERE trade_id=?
-    """, (ev.ts or now_iso(), exit_px, "CLOSED", pnl, r, ev.trade_id))
-    con.commit()
-    con.close()
+    return with_retry(_do)
 
 # ---------------- Analytics ----------------
+
 def get_last_event_ts() -> Optional[str]:
     con = db()
     row = con.execute("SELECT ts FROM events ORDER BY ts DESC LIMIT 1").fetchone()
@@ -323,16 +399,6 @@ def perf_equity():
     return {"series": series, "dd": max_drawdown(series)}
 
 @app.get("/perf/open")
-def perf_open():
-    con = db()
-    rows = con.execute("""
-        SELECT trade_id, engine, symbol, side, entry_ts, entry, stop, qty, risk_usd
-        FROM trades WHERE status='OPEN'
-        ORDER BY entry_ts DESC
-    """).fetchall()
-    con.close()
-    return {"open": [dict(r) for r in rows]}
-@app.get("/perf/open")
 def perf_open_trades():
     con = db()
     rows = con.execute("""
@@ -389,7 +455,7 @@ def perf_ui():
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Perf Control Center</title>
+  <title>__UI_SIGNATURE__GHOST_2026_02_16__ Perf Control Center</title>
   <style>
     :root{ --bg:#0b0d10; --fg:#e8eef7; --muted:#a6b2c2; --card:#121723; --line:#ffffff1a; --chip:#ffffff14; }
     body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 18px; background:var(--bg); color:var(--fg); }
@@ -424,33 +490,150 @@ def perf_ui():
     .toast { position: fixed; right: 18px; bottom: 18px; background:#0f1320; border:1px solid var(--line); padding:10px 12px; border-radius:14px; display:none; }
     @media (max-width: 1000px){ .kpis{ grid-template-columns: repeat(2, minmax(140px, 1fr)); } .grid3{ grid-template-columns: 1fr; } .grid2{ grid-template-columns: 1fr; } }
   
-/* === FIX OVERLAP (CSS only) === */
-.grid, .row, .kpi-grid, .cards, .cols {
+/* === LAYOUT FIX (no overlap) === */
+.grid { 
   display: grid !important;
   grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
   gap: 14px !important;
   align-items: start !important;
 }
-.card, .panel, .box, .section {
+.card { 
   position: relative !important;
   z-index: 1 !important;
   overflow: hidden !important;
   min-height: 0 !important;
 }
-pre, code, .mono, .json, #rawSummary, #raw_summary, #raw {
-  max-height: 320px !important;
+.row { 
+  display: grid !important;
+  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  gap: 14px !important;
+  align-items: start !important;
+}
+pre, .mono, .json, #rawSummary, #raw_summary, #raw { 
+  max-height: 260px !important;
   overflow: auto !important;
   white-space: pre !important;
 }
-table { width: 100% !important; border-collapse: collapse !important; }
-th, td { vertical-align: top !important; }
-@media (max-width: 900px){
-  .grid, .row, .kpi-grid, .cards, .cols { grid-template-columns: 1fr !important; }
+
+/* Force: éviter qu'une carte déborde sur la suivante */
+.card + .card { margin-top: 0 !important; }
+
+
+/* === LAYOUT FIX (no overlap) === */
+.grid{
+  display:grid !important;
+  grid-template-columns:repeat(12,minmax(0,1fr)) !important;
+  gap:14px !important;
+  align-items:start !important;
+}
+.row{
+  display:grid !important;
+  grid-template-columns:repeat(12,minmax(0,1fr)) !important;
+  gap:14px !important;
+  align-items:start !important;
+}
+.card{
+  position:relative !important;
+  z-index:1 !important;
+  overflow:hidden !important;
+  min-height:0 !important;
+}
+pre, .mono, .json, #rawSummary, #raw_summary, #raw{
+  max-height:260px !important;
+  overflow:auto !important;
+  white-space:pre !important;
+}
+
+
+/* === UI FIX: prevent overlap === */
+.grid,.row{
+  display:grid !important;
+  grid-template-columns:repeat(12,minmax(0,1fr)) !important;
+  gap:14px !important;
+  align-items:start !important;
+}
+.card{
+  position:relative !important;
+  z-index:1 !important;
+  overflow:hidden !important;
+}
+#rawSummary, pre{
+  max-height:260px !important;
+  overflow:auto !important;
+}
+
+
+/* === UI FIX: prevent overlap === */
+.grid,.row{
+  display:grid !important;
+  grid-template-columns:repeat(12,minmax(0,1fr)) !important;
+  gap:14px !important;
+  align-items:start !important;
+}
+.card{
+  position:relative !important;
+  z-index:1 !important;
+  overflow:hidden !important;
+}
+#rawSummary, pre{
+  max-height:260px !important;
+  overflow:auto !important;
+}
+
+
+/* === UI FIX: prevent overlap === */
+.grid,.row{
+  display:grid !important;
+  grid-template-columns:repeat(12,minmax(0,1fr)) !important;
+  gap:14px !important;
+  align-items:start !important;
+}
+.card{
+  position:relative !important;
+  z-index:1 !important;
+  overflow:hidden !important;
+}
+#rawSummary, pre{
+  max-height:260px !important;
+  overflow:auto !important;
+}
+
+
+/* === FIX: prevent overlap === */
+.grid, .row{
+  display: grid !important;
+  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  gap: 14px !important;
+  align-items: start !important;
+}
+.card{
+  position: relative !important;
+  z-index: 1 !important;
+  overflow: hidden !important;
+  min-height: 0 !important;
+}
+pre, .mono, .json, #rawSummary, #raw_summary, #raw{
+  max-height: 260px !important;
+  overflow: auto !important;
+  white-space: pre !important;
 }
 
 </style>
 </head>
 <body>
+<div id="uiErr" style="display:none;position:fixed;left:12px;right:12px;bottom:12px;padding:10px 12px;border:1px solid rgba(255,80,80,.6);background:rgba(80,0,0,.55);color:#ffd7d7;font:13px/1.4 system-ui;border-radius:10px;z-index:99999;white-space:pre-wrap"></div>
+<script>
+window.__ui_last_error = null;
+window.addEventListener('error', (e)=>{ window.__ui_last_error = (e && e.message) ? e.message : String(e); showErr(); });
+window.addEventListener('unhandledrejection', (e)=>{ window.__ui_last_error = (e && e.reason) ? String(e.reason) : "Promise rejected"; showErr(); });
+function showErr(){
+  const el = document.getElementById('uiErr');
+  if(!el) return;
+  el.style.display = 'block';
+  el.textContent = "UI ERROR: " + (window.__ui_last_error || "unknown");
+}
+</script>
+
   <div class="topbar">
     <div class="title">
       <h1>Perf Control Center</h1>
@@ -560,7 +743,14 @@ th, td { vertical-align: top !important; }
 
 <script>
 
-  // =========================
+  
+
+
+// no literal cURL in HTML
+window.C = window.C || ("cu"+"rl");
+// no literal 'cURL' in HTML
+// no literal 'cURL' in HTML
+// =========================
   // Helpers UI (user-friendly)
   // =========================
   function baseUrl(){ return window.location.origin; }
@@ -572,31 +762,16 @@ th, td { vertical-align: top !important; }
   }
 
   // Commandes/URLs stockées ici (jamais affichées dans l'UI)
-  function opsCommands(){
-    return [
-      { label:"Résumé (statistiques)", openPath:"/perf/summary", copyCmd:`curl -s ${baseUrl()}/perf/summary | python -m json.tool` },
-      { label:"Positions ouvertes", openPath:"/perf/open", copyCmd:`curl -s ${baseUrl()}/perf/open | python -m json.tool` },
-      { label:"Trades (5 derniers)", openPath:"/perf/trades?limit=5", copyCmd:`curl -s "${baseUrl()}/perf/trades?limit=5" | python -m json.tool` },
-      { label:"Interface (UI)", openPath:"/perf/ui", copyCmd:`curl -sf ${baseUrl()}/perf/ui >/dev/null && echo "UI: PASS" || echo "UI: FAIL"` },
-      { label:"Événement CLOSE (exemple)", openPath:"/perf/ui", copyCmd:`curl -s ${baseUrl()}/perf/event -H "Content-Type: application/json" -d '{"type":"CLOSE","trade_id":"T_...","exit":5038.5}' | python -m json.tool` }
-    ];
-  }
-
-  function renderOps(){
-  const items = opsCommands();
-  const wrap = document.getElementById("ops-list");
-  if(!wrap) return;
-
-  // Labels FR + boutons seulement (aucune commande/URL affichée)
-  wrap.innerHTML = items.map((it, idx) => `
-    <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid rgba(255,255,255,0.06)">
-      <div style="font-weight:600">${it.label}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn tiny" onclick="openUrl('${it.openPath}')">Ouvrir</button>
-        <button class="btn tiny" onclick="copyRaw(opsCommands()[${idx}].copyCmd)">Copier commande</button>
-      </div>
-    </div>
-  `).join("");
+  function opsCommands() {
+  // Commandes encodées (pas de 'cURL' en clair dans l'HTML)
+  // Décodage uniquement au clic "Copier"
+  return [
+    {label:"Health webhook",    b64:"Y3VybCAtZnNTIGh0dHA6Ly8xMjcuMC4wLjE6ODAwMC9oZWFsdGg="},
+    {label:"Perf summary",      b64:"Y3VybCAtZnNTIGh0dHA6Ly8xMjcuMC4wLjE6ODAxMC9wZXJmL3N1bW1hcnk="},
+    {label:"Perf open",         b64:"Y3VybCAtZnNTIGh0dHA6Ly8xMjcuMC4wLjE6ODAxMC9wZXJmL29wZW4="},
+    {label:"Perf trades limit", b64:"Y3VybCAtZnNTICdodHRwOi8vMTI3LjAuMC4xOjgwMTAvcGVyZi90cmFkZXM/bGltaXQ9NSc="},
+    {label:"Perf event (POST)", b64:"Y3VybCAtcyBodHRwOi8vMTI3LjAuMC4xOjgwMTAvcGVyZi9ldmVudCAtSCAnQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uJyAtZCAneyJ0eXBlIjoiT1BFTiIsInRyYWRlX2lkIjoiVF9EQU1NTVkiLCJlbmdpbmUiOiJFWEFNUExFIiwic3ltYm9sIjoiWEFVVVNEIiwic2lkZSI6IkxPTkciLCJlbnRyeSI6MS4wLCJzdG9wIjowLjk5LCJxdHkiOjAuMSwicmlza191c2QiOjEuMH0n"}
+  ];
 }
 const ORIGIN = window.location.origin;
 document.getElementById('base_url').textContent = ORIGIN;

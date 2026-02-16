@@ -41,3 +41,13 @@ scripts/*.bak.*
 
 # backups
 perf/perf_app.py.bak.*
+
+# local junk
+tmp/
+logs/
+*.log
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
