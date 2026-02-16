@@ -558,20 +558,21 @@ def perf_ui():
   }
 
   function renderOps(){
-    const items = opsCommands();
-    const wrap = document.getElementById("ops-list");
-    if(!wrap) return;
-    wrap.innerHTML = items.map((it, idx) => `
-      <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid rgba(255,255,255,0.06)">
-        <div style="font-weight:600">${it.label}</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn tiny" onclick="openUrl('${it.openPath}')">Ouvrir</button>
-          <button class="btn tiny" onclick="copyRaw(opsCommands()[${idx}].copyCmd)">Copier commande</button>
-        </div>
-      </div>
-    `).join("");
-  }
+  const items = opsCommands();
+  const wrap = document.getElementById("ops-list");
+  if(!wrap) return;
 
+  // Labels FR + boutons seulement (aucune commande/URL affichée)
+  wrap.innerHTML = items.map((it, idx) => `
+    <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid rgba(255,255,255,0.06)">
+      <div style="font-weight:600">${it.label}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn tiny" onclick="openUrl('${it.openPath}')">Ouvrir</button>
+        <button class="btn tiny" onclick="copyRaw(opsCommands()[${idx}].copyCmd)">Copier commande</button>
+      </div>
+    </div>
+  `).join("");
+}
 const ORIGIN = window.location.origin;
 document.getElementById('base_url').textContent = ORIGIN;
 
@@ -583,35 +584,8 @@ async function copyText(t){ await navigator.clipboard.writeText(t); toast('Copie
 function fmt(n, d=2){ if(n===null||n===undefined||n==='') return '—'; const x=Number(n); if(!isFinite(x)) return String(n); return x.toFixed(d); }
 function setStatus(ok){ const el=document.getElementById('status_badge'); el.textContent=ok?'OK':'DOWN'; el.style.color=ok?'#7dffbf':'#ff7d7d'; }
 
-function buildCmds(){
-  const base = ORIGIN;
-  const items = [
-    {label:'Open', url: base + '/perf/open', curl:`curl -s ${base}/perf/open | python -m json.tool`},
-    {label:'Trades (limit=5)', url: base + '/perf/trades?limit=5', curl:`curl -s \"${base}/perf/trades?limit=5\" | python -m json.tool`},
-    {label:'Summary', url: base + '/perf/summary', curl:`curl -s ${base}/perf/summary | python -m json.tool`},
-    {label:'UI', url: base + '/perf/ui', curl:`curl -sf ${base}/perf/ui >/dev/null && echo \"UI: PASS\" || echo \"UI: FAIL\"`},
-    {label:'POST event (CLOSE)', url: base + '/perf/event', curl:`curl -s ${base}/perf/event -H \"Content-Type: application/json\" -d '{\"type\":\"CLOSE\",\"trade_id\":\"T_...\",\"exit\":5038.5}' | python -m json.tool`},
-  ];
-  let html = '';
-  for(const it of items){
-    const u = esc(it.url);
-    const c = esc(it.curl);
-    const safeCmd = it.curl.replaceAll('`','\\`');
-    html += `
-      <div style="margin-bottom:10px; padding:10px; border:1px solid var(--line); border-radius:14px; background:#0f1320;">
-        <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
-          <div><strong>${esc(it.label)}</strong> <span class="muted mono">${u}</span></div>
-          <div style="display:flex; gap:8px;">
-            <button class="ghost" onclick="window.open('${u}','_blank')">Open</button>
-            <button class="ghost" onclick="copyText('${u}')">Copy URL</button>
-          </div>
-        </div>
-        <div style="margin-top:8px;"><code class="mono">${c}</code></div>
-        <div style="margin-top:8px;"><button class="ghost" onclick="copyText(\`${safeCmd}\`)">Copy cmd</button></div>
-      </div>
-    `;
-  }
-  document.getElementById('cmds').innerHTML = html;
+function buildCmds(){ return; }
+document.getElementById('cmds').innerHTML = html;
 }
 
 function fillKpis(s){
@@ -630,7 +604,7 @@ async function refreshOpen(){
   for(const t of open){
     const id = esc(t.trade_id);
     h += mkRow([
-      `<a href="#" onclick="copyText('${id}'); document.getElementById('close_id').value='${id}'; return false;"><code class="mono">${id}</code></a>`,
+      `<a href="#" onclick="copyText('${id}'); document.getElementById('close_id').value='${id}'; return false;"><div class="muted">Commande masquée (copie disponible).</div></a>`,
       esc(t.engine), esc(t.symbol), esc(t.side),
       esc(t.entry), esc(t.stop), esc(t.qty), esc(t.risk_usd),
       esc(t.entry_ts)
@@ -658,7 +632,7 @@ async function refreshTrades(){
   for(const t of trades){
     const id = esc(t.trade_id);
     ht += mkRow([
-      `<a href="#" onclick="copyText('${id}'); return false;"><code class="mono">${id}</code></a>`,
+      `<a href="#" onclick="copyText('${id}'); return false;"><div class="muted">Commande masquée (copie disponible).</div></a>`,
       esc(t.status), esc(t.engine), esc(t.symbol), esc(t.side),
       esc(t.entry), esc(t.exit ?? ''),
       esc(t.pnl_real ?? ''), esc(t.r_real ?? ''),
@@ -707,7 +681,7 @@ async function closeTrade(){
 setTimeout(renderOps, 0);
 }
 
-buildCmds();
+
 refreshAll(false);
 setInterval(()=>{ if(document.getElementById('autorefresh').checked) refreshAll(false); }, 5000);
 </script>
