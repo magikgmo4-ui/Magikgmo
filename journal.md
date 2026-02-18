@@ -2466,3 +2466,59 @@ git commit -m "security+ops: xss escape, remote key lock, telegram env unificati
 - Préparer TradingView/perf:
   - Définir `TV_WEBHOOK_KEY` (obligatoire pour accès remote/ngrok) via `.env` + restart services si utilisés.
   - Mettre en place l’URL webhook (ngrok) et créer alerte TradingView; valider réception event et création trade perf.
+
+## 2026-02-18 03:20 | TV Webhook | TV_TEST | XAUUSD M5 | BUY
+1. **Signal**: `BUY`
+2. **Engine**: `TV_TEST`
+3. **Symbol/TF**: `XAUUSD` / `M5`
+4. **Price**: `100.0`
+5. **TP**: `110.0`
+6. **SL**: `90.0`
+7. **Reason**: tv test buy
+8. **Payload brut**:
+```json
+{
+  "key": "GHOST_XAU_2026_ULTRA",
+  "engine": "TV_TEST",
+  "signal": "BUY",
+  "symbol": "XAUUSD",
+  "tf": "M5",
+  "price": 100.0,
+  "tp": 110.0,
+  "sl": 90.0,
+  "reason": "tv test buy",
+  "_ts": "2026-02-18T08:20:36.379521+00:00",
+  "_ip": "67.69.76.11",
+  "qty": 10.0,
+  "risk_usd": 100.0,
+  "risk_real_usd": 100.0
+}
+```
+
+## 2026-02-18 03:21 | TV Webhook | TV_TEST | XAUUSD M5 | BUY
+1. **Signal**: `BUY`
+2. **Engine**: `TV_TEST`
+3. **Symbol/TF**: `XAUUSD` / `M5`
+4. **Price**: `100.0`
+5. **TP**: `110.0`
+6. **SL**: `90.0`
+7. **Reason**: tv test buy
+8. **Payload brut**:
+```json
+{
+  "key": "GHOST_XAU_2026_ULTRA",
+  "engine": "TV_TEST",
+  "signal": "BUY",
+  "symbol": "XAUUSD",
+  "tf": "M5",
+  "price": 100.0,
+  "tp": 110.0,
+  "sl": 90.0,
+  "reason": "tv test buy",
+  "_ts": "2026-02-18T08:21:48.711413+00:00",
+  "_ip": "67.69.76.11",
+  "qty": 10.0,
+  "risk_usd": 100.0,
+  "risk_real_usd": 100.0
+}
+```
