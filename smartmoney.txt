@@ -1,0 +1,221 @@
+//@version=5
+indicator("Smart Money Clone | Bulletproof + Webhook JSON (SERVER-COMPAT)", overlay=true, max_labels_count=500)
+
+// ================= INPUTS =================
+length = input.int(5, "Pivot Length", minval=1, maxval=20)
+momentum_threshold_base = input.float(0.01, "Base Momentum Threshold (%)", minval=0.001, maxval=1.0, step=0.001)
+
+tp_points = input.int(10, "Take Profit (points)", minval=5, maxval=500)
+sl_points = input.int(10, "Stop Loss (points)", minval=5, maxval=500)
+use_ticks = input.bool(true, "TP/SL points = TICKS (recommended)", tooltip="If ON: TP/SL = points * syminfo.mintick. If OFF: TP/SL uses raw price units.")
+
+min_signal_distance = input.int(5, "Min Signal Distance (bars)", minval=1, maxval=50)
+
+use_momentum_filter = input.bool(true, "Use Momentum Filter", group="Filters")
+use_trend_filter = input.bool(true, "Use HTF Trend Filter", group="Filters")
+higher_tf_choice = input.string("5M", "Higher TF", options=["1M","5M","15M","30M","1H","4H","D"], group="Filters")
+
+use_lower_tf_filter = input.bool(true, "Use LTF Filter", group="Filters")
+lower_tf_choice = input.string("5M", "Lower TF", options=["1M","5M","15M","30M","1H","4H","D"], group="Filters")
+
+use_volume_filter = input.bool(true, "Use Volume Filter", group="Filters")
+use_breakout_filter = input.bool(true, "Use Breakout Filter", group="Filters")
+
+restrict_repeated_signals = input.bool(true, "Restrict Repeated Signals", group="Filters")
+restrict_tf_choice = input.string("5M", "Restrict TF", options=["1M","5M","15M","30M","1H","4H","D"], group="Filters")
+
+volumeLongPeriod = input.int(50, "Long Volume Period", group="Volume")
+volumeShortPeriod = input.int(5, "Short Volume Period", group="Volume")
+breakoutPeriod = input.int(5, "Breakout Period", group="Breakout")
+
+send_alerts = input.bool(true, "Send Webhook Alerts (JSON)", group="Alerts")
+engine_mode = input.string("AUTO", "Engine Mode", options=["AUTO","COINM_SHORT","USDTM_LONG","GOLD_CFD_LONG"], group="Alerts")
+
+// MUST match your server expectation
+tv_key = input.string("GHOST_XAU_2026_ULTRA", "TV_WEBHOOK_KEY", group="Alerts")
+
+force_tv_test = input.bool(false, "FORCE_TV_TEST (send 1 alert now)", group="Alerts")
+var bool force_sent = false
+
+if not force_tv_test
+    force_sent := false
+
+if force_tv_test and not force_sent and barstate.islast
+    force_sent := true
+    // TP/SL valides pour ton serveur (pas 0)
+    float tp_test = close + (tp_points * syminfo.mintick)
+    float sl_test = close - (sl_points * syminfo.mintick)
+    label.new(bar_index, high, "📨 FORCE_TV_TEST SENT", style=label.style_label_down, textcolor=color.white, color=color.blue)
+    if send_alerts
+        alert("{\"key\":\"" + tv_key + "\",\"engine\":\"TV_TEST\",\"signal\":\"BUY\",\"symbol\":\"" + syminfo.ticker + "\",\"tf\":\"" + timeframe.period + "\",\"price\":" + str.tostring(close) + ",\"tp\":" + str.tostring(tp_test) + ",\"sl\":" + str.tostring(sl_test) + ",\"reason\":\"FORCE_TV_TEST\"}", alert.freq_once_per_bar)
+
+
+// AUTO TEST (server-compatible): fires once when enabled; sends signal BUY + valid TP/SL
+auto_test_webhook = input.bool(false, "TEST AUTO: send 1 webhook now (BUY)", group="Alerts")
+var bool auto_test_sent = false
+
+// ================= MOMENTUM =================
+atr_value = ta.atr(14)
+volatility_factor = atr_value / close
+momentum_threshold = momentum_threshold_base * (1 + volatility_factor * 2)
+price_change = ((close - close[1]) / close[1]) * 100
+
+// ================= PIVOTS =================
+pivot_high = ta.pivothigh(high, length, length)
+pivot_low  = ta.pivotlow(low, length, length)
+
+var float last_high = na
+var float last_low = na
+
+if not na(pivot_high)
+    last_high := pivot_high
+if not na(pivot_low)
+    last_low := pivot_low
+
+// ================= TF MAPPER SAFE =================
+f_tf(tfStr) =>
+    string out = "D"
+    if tfStr == "1M"
+        out := "1"
+    else if tfStr == "5M"
+        out := "5"
+    else if tfStr == "15M"
+        out := "15"
+    else if tfStr == "30M"
+        out := "30"
+    else if tfStr == "1H"
+        out := "60"
+    else if tfStr == "4H"
+        out := "240"
+    else if tfStr == "D"
+        out := "D"
+    out
+
+// ================= TREND FUNCTION (FIXED: compare TF close to TF EMA/VWAP) =================
+f_trend(tfStr) =>
+    _tf = f_tf(tfStr)
+
+    c_tf    = request.security(syminfo.tickerid, _tf, close)
+    ema_tf  = request.security(syminfo.tickerid, _tf, ta.ema(close, 20))
+    vwap_tf = request.security(syminfo.tickerid, _tf, ta.vwap(hlc3))
+
+    // VWAP can be na on some symbols/TFs => fallback to EMA-only
+    vwap_ok = not na(vwap_tf)
+
+    int t = 0
+    if c_tf > ema_tf and (not vwap_ok or c_tf > vwap_tf)
+        t := 1
+    else if c_tf < ema_tf and (not vwap_ok or c_tf < vwap_tf)
+        t := -1
+    t
+
+higher_tf_trend   = f_trend(higher_tf_choice)
+lower_tf_trend    = f_trend(lower_tf_choice)
+restrict_tf_trend = f_trend(restrict_tf_choice)
+
+// ================= FILTERS =================
+bull_ok = higher_tf_trend == 1
+bear_ok = higher_tf_trend == -1
+
+lt_bull = lower_tf_trend == 1
+lt_bear = lower_tf_trend == -1
+lt_not_neutral = lower_tf_trend != 0
+
+vol_avg = ta.sma(volume, volumeLongPeriod)
+vol_short = ta.sma(volume, volumeShortPeriod)
+vol_condition = volume > vol_avg and ta.change(vol_short) > 0
+
+highest_break = ta.highest(high, breakoutPeriod)
+lowest_break  = ta.lowest(low, breakoutPeriod)
+
+early_sell = use_momentum_filter ? price_change < -momentum_threshold : true
+early_buy  = use_momentum_filter ? price_change >  momentum_threshold : true
+
+sell_trend_ok = use_trend_filter ? bear_ok : true
+buy_trend_ok  = use_trend_filter ? bull_ok : true
+
+sell_ltf_ok = use_lower_tf_filter ? (not lt_bull and lt_not_neutral) : true
+buy_ltf_ok  = use_lower_tf_filter ? (not lt_bear and lt_not_neutral) : true
+
+sell_vol_ok = use_volume_filter ? vol_condition : true
+buy_vol_ok  = use_volume_filter ? vol_condition : true
+
+sell_break_ok = use_breakout_filter ? close < lowest_break[1]  : true
+buy_break_ok  = use_breakout_filter ? close > highest_break[1] : true
+
+// ================= ANTI-REPEAT =================
+var int last_signal_bar = -100000
+var string last_signal = "Neutral"
+var int last_trend = 0
+
+sell_allowed = not restrict_repeated_signals or (last_signal != "Sell" or (restrict_tf_trend != last_trend))
+buy_allowed  = not restrict_repeated_signals or (last_signal != "Buy"  or (restrict_tf_trend != last_trend))
+
+sell_condition = early_sell and (bar_index - last_signal_bar >= min_signal_distance) and sell_trend_ok and sell_ltf_ok and sell_vol_ok and sell_break_ok and sell_allowed
+buy_condition  = early_buy  and (bar_index - last_signal_bar >= min_signal_distance) and buy_trend_ok  and buy_ltf_ok  and buy_vol_ok  and buy_break_ok  and buy_allowed
+
+// ================= ENGINE AUTO =================
+f_engine() =>
+    string eng = engine_mode
+    if engine_mode == "AUTO"
+        if str.contains(syminfo.ticker, "XAU")
+            eng := "GOLD_CFD_LONG"
+        else
+            eng := "COINM_SHORT"
+    eng
+
+// ================= TP/SL HELPERS =================
+p2v(points) =>
+    use_ticks ? (points * syminfo.mintick) : points
+
+// ================= JSON BUILDER (INCLUDES key) =================
+f_json(sig, tp, sl) =>
+    "{\"key\":\"" + tv_key + "\",\"engine\":\"" + f_engine() + "\",\"signal\":\"" + sig + "\",\"symbol\":\"" + syminfo.ticker + "\",\"tf\":\"" + timeframe.period + "\",\"price\":" + str.tostring(close) + ",\"tp\":" + str.tostring(tp) + ",\"sl\":" + str.tostring(sl) + "}"
+
+// TEST JSON (server-compatible: signal BUY/SELL only + valid sl/tp)
+f_json_test_buy(tp, sl) =>
+    "{\"key\":\"" + tv_key + "\",\"engine\":\"TV_TEST\",\"signal\":\"BUY\",\"symbol\":\"" + syminfo.ticker + "\",\"tf\":\"" + timeframe.period + "\",\"price\":" + str.tostring(close) + ",\"tp\":" + str.tostring(tp) + ",\"sl\":" + str.tostring(sl) + ",\"reason\":\"AUTO_TEST\"}"
+
+// ================= SIGNALS =================
+var float tp_sell = na
+var float sl_sell = na
+var float tp_buy = na
+var float sl_buy = na
+
+alertcondition(sell_condition, title="SMART SELL", message="SELL")
+alertcondition(buy_condition,  title="SMART BUY",  message="BUY")
+
+if sell_condition
+    tp_sell := close - p2v(tp_points)
+    sl_sell := close + p2v(sl_points)
+    label.new(bar_index, high, "🔴 SELL", style=label.style_label_down, textcolor=color.white, color=color.red)
+    last_signal := "Sell"
+    last_signal_bar := bar_index
+    last_trend := restrict_tf_trend
+    if send_alerts
+        alert(f_json("SELL", tp_sell, sl_sell), alert.freq_once_per_bar_close)
+
+if buy_condition
+    tp_buy := close + p2v(tp_points)
+    sl_buy := close - p2v(sl_points)
+    label.new(bar_index, low, "🟢 BUY", style=label.style_label_up, textcolor=color.white, color=color.green)
+    last_signal := "Buy"
+    last_signal_bar := bar_index
+    last_trend := restrict_tf_trend
+    if send_alerts
+        alert(f_json("BUY", tp_buy, sl_buy), alert.freq_once_per_bar_close)
+
+// ================= AUTO TEST WEBHOOK (fires once when enabled) =================
+if not auto_test_webhook
+    auto_test_sent := false
+
+if auto_test_webhook and not auto_test_sent and barstate.islast
+    auto_test_sent := true
+
+    float tp_test = close + p2v(tp_points)
+    float sl_test = close - p2v(sl_points)
+
+    label.new(bar_index, high, "✅ AUTO TEST SENT (BUY)", style=label.style_label_down, textcolor=color.white, color=color.blue)
+
+    if send_alerts
+        alert(f_json_test_buy(tp_test, sl_test), alert.freq_once_per_bar)
