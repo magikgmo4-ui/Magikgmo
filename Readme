@@ -1,1 +1,23 @@
-trading xauusd
+Magikgmo — Trading infra (TV Webhook + Perf)
+
+## Quickstart (Debian / Ubuntu)
+```bash
+cd /opt/trading
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Environment (.env)
+Create `/opt/trading/.env` (ignored by git).
+```bash
+TV_WEBHOOK_KEY=change_me
+OPS_ADMIN_KEY=change_me
+TELEGRAM_BOT_TOKEN=123:abc
+TELEGRAM_CHAT_ID=123456
+```
+
+## Verification
+```bash
+./scripts/verify_all.sh
+```

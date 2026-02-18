@@ -24,7 +24,7 @@ def _short_hash(obj: Any) -> str:
 
 
 def build_trade_id(engine: str, symbol: str, side: str, payload: Dict[str, Any]) -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]  # ms
     return f"T_{ts}_{engine}_{symbol}_{side}_{_short_hash(payload)}"
 
 

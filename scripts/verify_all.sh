@@ -27,11 +27,15 @@ mkdir -p tmp
   echo
 
   echo "== smoke =="
-  ./scripts/smoke.sh || true
+./scripts/smoke.sh
+SMOKE_RC=$?
+echo "smoke rc: ${SMOKE_RC}"
   echo
 
   echo "== diagnose =="
-  ./scripts/diagnose.sh || true
+./scripts/diagnose.sh
+DIAG_RC=$?
+echo "diagnose rc: ${DIAG_RC}"
   echo
 
   echo "===== VERIFY END ${TS} ====="
@@ -39,3 +43,8 @@ mkdir -p tmp
 
 echo
 echo "Saved log: ${OUT}"
+
+
+if [[ "${SMOKE_RC:-0}" -ne 0 || "${DIAG_RC:-0}" -ne 0 ]]; then
+  exit 1
+fi

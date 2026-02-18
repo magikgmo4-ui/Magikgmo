@@ -11,7 +11,7 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.getenv("PERF_DB_PATH", os.path.join(APP_DIR, "perf.db"))
 
 # ---- Telegram (optional) ----
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN", "")).strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 NO_ACTIVITY_MIN = int(os.getenv("PERF_NO_ACTIVITY_MIN", "30"))
 DD_ALERT_PCT = float(os.getenv("PERF_DD_ALERT_PCT", "5.0"))  # % global

@@ -331,9 +331,21 @@ def metrics(window_min: int = 60, limit: int = 50, inactivity_sec: int = INACTIV
 
 
 # -------------------- Webhook --------------------
-def require_key(payload: Dict[str, Any]) -> None:
+def _is_local_client(req: Request) -> bool:
+    try:
+        host = (req.client.host or "").strip()
+    except Exception:
+        host = ""
+    return host in ("127.0.0.1", "::1")
+
+def require_key(req: Request, payload: Dict[str, Any]) -> None:
+    """Validate secret key.
+    - If TV_WEBHOOK_KEY is set: require exact match.
+    - If TV_WEBHOOK_KEY is NOT set: allow only localhost clients (dev mode).
+    """
     if not TV_WEBHOOK_KEY:
-        # If user didn't set env key, accept (dev mode)
+        if not _is_local_client(req):
+            raise HTTPException(status_code=403, detail="Missing TV_WEBHOOK_KEY (set env) — remote access blocked")
         return
     got = (payload.get("key") or "").strip()
     if got != TV_WEBHOOK_KEY:
@@ -389,9 +401,7 @@ async def tv_webhook(req: Request):
 
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON must be object")
-
-    require_key(payload)
-
+    require_key(req, payload)
     engine = (payload.get("engine") or "").strip()
     signal = (payload.get("signal") or "").strip().upper()
     symbol = (payload.get("symbol") or "").strip()
@@ -634,7 +644,15 @@ async function fetchJson(url){
   return await r.json();
 }
 
-function esc(x){ return (x===null||x===undefined) ? "" : String(x); }
+function esc(x){
+  if(x===null||x===undefined) return "";
+  return String(x)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 async function refresh(){
   try{
