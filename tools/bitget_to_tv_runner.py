@@ -1,136 +1,153 @@
-import os, json, time, urllib.request
-import sys
-sys.path.insert(0, "/opt/trading/tools")
+import os, json, time, urllib.request, urllib.error
 from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+# garantir import depuis /opt/trading/tools (bitget_feed.py est là)
+if "/opt/trading/tools" not in sys.path:
+    sys.path.insert(0, "/opt/trading/tools")
+
 from bitget_feed import fetch_candles_usdt_futures
 
-TV_URL = os.environ.get("TV_WEBHOOK_URL", "http://127.0.0.1:8000/tv")
-KEY = os.environ.get("TV_WEBHOOK_KEY", "")
-STATE = "/opt/trading/tmp/bitget_tv_state.json"
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-PERF_URL = os.environ.get("PERF_URL", "http://127.0.0.1:8010")
+def _load_json(path: str, default):
+    try:
+        p = Path(path)
+        if not p.exists():
+            return default
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return default
 
-def _http_json(url: str, method: str = "GET", payload: dict | None = None, timeout: int = 15):
-    import json as _json, urllib.request as _ur
-    data = None
-    headers = {"User-Agent":"bitget-runner/1.0"}
-    if payload is not None:
-        data = _json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = _ur.Request(url, data=data, headers=headers, method=method)
-    with _ur.urlopen(req, timeout=timeout) as r:
-        return _json.loads(r.read().decode("utf-8"))
 
-def perf_find_open(engine: str, symbol: str):
-    d = _http_json(f"{PERF_URL}/perf/open")
-    for t in d.get("open", []):
-        if t.get("engine") == engine and t.get("symbol") == symbol and t.get("status") == "OPEN":
-            return t
-    return None
+def _save_json(path: str, obj) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(obj, indent=2, sort_keys=True), encoding="utf-8")
 
-def perf_close(trade_id: str, exit_price: float):
-    return _http_json(f"{PERF_URL}/perf/event", method="POST", payload={
-        "type": "CLOSE",
-        "trade_id": trade_id,
-        "exit": float(exit_price)
-    })
 
-DRY_RUN = os.environ.get("DRY_RUN", "1") == "1"
-FORCE_SIGNAL = (os.environ.get("FORCE_SIGNAL") or "").strip().upper()
-
-def iso_from_ms(ts_ms: int) -> str:
-    return datetime.fromtimestamp(ts_ms/1000, tz=timezone.utc).isoformat()
-
-def post(payload: dict) -> dict:
-    body = json.dumps(payload).encode("utf-8")
+def _post_json(url: str, payload: dict, timeout: int = 15) -> dict:
     req = urllib.request.Request(
-        TV_URL,
-        data=body,
-        headers={"Content-Type":"application/json"},
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read().decode("utf-8"))
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read().decode("utf-8", errors="replace")
+        return json.loads(raw) if raw else {}
 
-def load_state():
-    try:
-        with open(STATE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_state(s):
-    os.makedirs(os.path.dirname(STATE), exist_ok=True)
-    with open(STATE, "w", encoding="utf-8") as f:
-        json.dump(s, f, indent=2, sort_keys=True)
 
 def main():
-    if not KEY:
-        raise SystemExit("Missing TV_WEBHOOK_KEY in env")
+    # relire ENV ICI (pas au top-level)
+    tv_url   = os.environ.get("TV_WEBHOOK_URL", "http://127.0.0.1:8000/tv").strip()
+    key      = os.environ.get("TV_WEBHOOK_KEY", "").strip()
+    engine   = os.environ.get("TV_ENGINE", "COINM_SHORT").strip()
+    symbol   = os.environ.get("SYMBOL", "BTCUSDT").strip()
+    tf_sec   = int(os.environ.get("TF_SEC", "300"))
+    poll_s   = int(os.environ.get("POLL_S", "5"))
+    sl_pts   = float(os.environ.get("SL_PTS", "10"))
+    dry_run  = os.environ.get("DRY_RUN", "0") == "1"
+    force    = (os.environ.get("FORCE_SIGNAL") or "").strip().upper()  # BUY/SELL/AUTO
+    one_shot = os.environ.get("ONE_SHOT", "0") == "1"
+    state_f  = os.environ.get("STATE_FILE", "/opt/trading/state/bitget_tv_state.json").strip()
 
-    symbol = os.environ.get("BITGET_SYMBOL", "BTCUSDT")
-    tf_sec = int(os.environ.get("BITGET_TF_SEC", "300"))
-    poll_s = int(os.environ.get("BITGET_POLL_S", "5"))
+    if not key:
+        print("TV_WEBHOOK_KEY missing in env")
+        raise SystemExit(2)
 
-    engine = os.environ.get("TV_ENGINE", "_TEST_BITGET_BTCUSDT_M5")
-    st = load_state()
-    last_ts = st.get("last_ts_ms")
+    if force not in ("", "AUTO", "BUY", "SELL"):
+        force = "AUTO"
+    if force == "":
+        force = "AUTO"
 
-    print(f"RUNNER start symbol={symbol} tf_sec={tf_sec} poll_s={poll_s} engine={engine} DRY_RUN={DRY_RUN}")
+    print(
+        f"RUNNER start symbol={symbol} tf_sec={tf_sec} poll_s={poll_s} "
+        f"engine={engine} DRY_RUN={dry_run} FORCE_SIGNAL={force}"
+    )
+
+    state = _load_json(state_f, {})
+    last_ts = int(state.get("last_ts_ms") or 0)
 
     while True:
         try:
-            print(f"fetching candles: symbol={{SYMBOL}} tf_sec={{TF_SEC}} ...")
-            try:
-                cs = fetch_candles_usdt_futures(SYMBOL, TF_SEC, limit=3)
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                print(f"[{datetime.now().isoformat()}] fetch ERROR: {e!r}")
+            print(f"fetching candles: symbol={symbol} tf_sec={tf_sec} ...")
+            cs = fetch_candles_usdt_futures(symbol, tf_sec, limit=3)
+            if not cs:
                 time.sleep(poll_s)
                 continue
-            print(f"got candles: {len(cs) if cs else 0}")
 
-            last = cs[-1]
-            ts_ms = last.ts_ms
+            c = cs[-1]  # bitget_feed.Candle(ts_ms, o,h,l,c,...)
+            bar_ts = int(getattr(c, "ts_ms", 0) or 0)
+            o = float(getattr(c, "o", 0) or 0)
+            close = float(getattr(c, "c", 0) or 0)
 
-            if last_ts != ts_ms:
-                # Placeholder signal (à remplacer par SMC):
-                signal = "BUY" if last.c >= last.o else "SELL"
-                if FORCE_SIGNAL in ("BUY","SELL"):
-                    signal = FORCE_SIGNAL
+            if bar_ts <= 0 or close <= 0:
+                time.sleep(poll_s)
+                continue
 
-                sl = (last.c - 10) if signal == "BUY" else (last.c + 10)
+            # dedup: ne pas renvoyer le même bar
+            if bar_ts == last_ts:
+                time.sleep(poll_s)
+                continue
 
-                payload = {
-                    "key": KEY,
-                    "engine": engine,
-                    "signal": signal,
-                    "symbol": symbol,
-                    "tf": str(tf_sec//60),
-                    "price": float(last.c),
-                    "sl": float(sl),
-                    "tp": None,
-                    "reason": f"bitget bar-close ts={ts_ms}",
-                    "_ts": iso_from_ms(ts_ms),
-                }
+            # signal
+            if force in ("BUY", "SELL"):
+                signal = force
+            else:
+                signal = "BUY" if close >= o else "SELL"
 
-                if DRY_RUN:
-                    print(f"[{datetime.now().isoformat()}] DRY_RUN payload={json.dumps(payload)[:300]}")
-                else:
-                    resp = post(payload)
-                    print(f"[{datetime.now().isoformat()}] sent {signal} {symbol} close={last.c} ts={ts_ms} resp={resp}")
+            # SL simple en points
+            sl = close - sl_pts if signal == "BUY" else close + sl_pts
 
-                last_ts = ts_ms
-                st["last_ts_ms"] = ts_ms
-                save_state(st)
+            tf_label = str(tf_sec // 60) if tf_sec % 60 == 0 else str(tf_sec)
+
+            payload = {
+                "key": key,
+                "engine": engine,
+                "signal": signal,
+                "symbol": symbol,
+                "tf": tf_label,
+                "price": close,
+                "sl": sl,
+                "tp": None,
+                "reason": f"bitget bar-close ts={bar_ts}",
+                "_ts": _utc_now_iso(),
+            }
+
+            if dry_run:
+                print(f"[{datetime.now().isoformat()}] DRY_RUN payload={json.dumps(payload)}")
+                # update state to simulate dedup (optionnel). Ici oui, pour se comporter comme réel.
+                last_ts = bar_ts
+                _save_json(state_f, {"last_ts_ms": last_ts, "updated_at": _utc_now_iso()})
+                if one_shot:
+                    return
+                time.sleep(poll_s)
+                continue
+
+            try:
+                resp = _post_json(tv_url, payload, timeout=15)
+                print(f"[{datetime.now().isoformat()}] sent {signal} {symbol} close={close} ts={bar_ts} resp={resp}")
+                last_ts = bar_ts
+                _save_json(state_f, {"last_ts_ms": last_ts, "updated_at": _utc_now_iso()})
+                if one_shot:
+                    return
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", errors="replace")
+                print(f"[{datetime.now().isoformat()}] TV HTTPError {e.code}: {body}")
 
             time.sleep(poll_s)
 
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
-            print(f"[{datetime.now().isoformat()}] ERROR: {e!r}")
-            time.sleep(max(5, poll_s))
+            print(f"[{datetime.now().isoformat()}] fetch ERROR: {repr(e)}")
+            time.sleep(poll_s)
+
 
 if __name__ == "__main__":
     main()
